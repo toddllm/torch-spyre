@@ -236,12 +236,25 @@ void convertArtifacts(std::string artifacts_path) {
 
   return;
 }
-
 int64_t get_elem_in_stick(c10::ScalarType torch_dtype) {
   auto str_type = torchScalarToString[torch_dtype];
   const auto [sen_dtype_cpu, sen_dtype_dev] =
       stringToDTDataFormatPair(str_type);
   return elems_per_stick(sen_dtype_dev);
+}
+
+void spyre_tensor_set_dmpa(const at::Tensor& tensor, const uint64_t address) {
+  auto owner =
+      static_cast<SharedOwnerCtx *>(tensor.storage().data_ptr().get_context())
+          ->owner;
+  owner->DmpaSetBytes(address);
+}
+
+auto spyre_tensor_get_dmpa(const at::Tensor& tensor) -> uint64_t {
+  auto owner =
+      static_cast<SharedOwnerCtx *>(tensor.storage().data_ptr().get_context())
+          ->owner;
+  return owner->DmpaAsBytes();
 }
 
 }  // namespace spyre
@@ -279,6 +292,10 @@ PYBIND11_MODULE(_C, m) {
       .value("SEN18F_FP24", DataFormats::SEN18F_FP24)
       .def("elems_per_stick",
            [](const DataFormats &df) { return spyre::elems_per_stick(df); });
+  m.def("set_dma_address", &spyre::spyre_tensor_set_dmpa,
+        "sets the DMA address");
+  m.def("get_dma_address", &spyre::spyre_tensor_get_dmpa,
+        "get the DMA address");
 
   py::class_<spyre::SpyreTensorLayout> dci_cls(m, "SpyreTensorLayout");
 

@@ -24,6 +24,7 @@
 #include <util/sendefs.h>
 
 #include <cstdlib>  // std::getenv
+#include <cstdint>
 #include <dee_internal/dee_graph_converter.hpp>
 #include <flex/flex_factory.hpp>
 #include <memory>
@@ -244,6 +245,18 @@ int64_t get_elem_in_stick(c10::ScalarType torch_dtype) {
   return elems_per_stick(sen_dtype_dev);
 }
 
+void spyre_tensor_set_dmpa(at::Tensor tensor, uint64_t dmpa) {
+  auto *ctx =
+      static_cast<SharedOwnerCtx *>(tensor.storage().data_ptr().get_context());
+  DmpaSetBytes(ctx->owner, dmpa);
+}
+
+uint64_t spyre_tensor_get_dmpa(at::Tensor tensor) {
+  auto *ctx =
+      static_cast<SharedOwnerCtx *>(tensor.storage().data_ptr().get_context());
+  return DmpaAsBytes(ctx->owner);
+}
+
 }  // namespace spyre
 
 PYBIND11_MODULE(_C, m) {
@@ -257,6 +270,8 @@ PYBIND11_MODULE(_C, m) {
   m.def("to_with_layout", &spyre::to_with_layout);
   m.def("empty_with_layout", &spyre::empty_with_layout);
 
+  m.def("set_dma_address", &spyre::spyre_tensor_set_dmpa);
+  m.def("get_dma_address", &spyre::spyre_tensor_get_dmpa);
   py::enum_<DataFormats>(m, "DataFormats")
       .value("SEN169_FP16", DataFormats::SEN169_FP16)
       .value("IEEE_FP32", DataFormats::IEEE_FP32)

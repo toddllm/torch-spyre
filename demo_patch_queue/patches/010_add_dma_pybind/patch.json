@@ -1,0 +1,6 @@
+{
+  "id": "010_add_dma_pybind",
+  "name": "Add DMA helpers and pybind exports",
+  "entrypoint": "patch.py",
+  "verify": "verify.sh"
+}

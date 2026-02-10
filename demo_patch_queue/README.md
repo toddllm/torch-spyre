@@ -48,3 +48,13 @@ Skip verification:
 ```bash
 python demo_patch_queue/apply_all.py --skip-verify
 ```
+
+## Verification Model
+
+Local verification is intentionally source-level only:
+
+- helper function signatures must exist exactly as expected
+- DMA pybind exports must exist exactly once with canonical targets
+
+No local build/import verification is attempted because `sendnn` is not
+available in local/open environments.

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>vLLM-Spyre Code Atlas</title>
+    <link rel="stylesheet" href="./vendor/prism.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg-a"></div>
+    <div class="bg-b"></div>
+
+    <header class="topbar">
+      <div class="title-wrap">
+        <p class="kicker">Local code atlas</p>
+        <h1>vLLM-Spyre Integration Atlas</h1>
+        <p class="subtitle">
+          Start high-level, then drill into exact line-level evidence: architecture narrative,
+          seam-by-seam interpretation, pinned snippets/permalinks, search, diff, and curation export.
+        </p>
+      </div>
+      <div class="actions">
+        <a id="open-report" class="btn" href="#" target="_blank" rel="noreferrer">Report.md</a>
+        <button id="export-curated" class="btn btn-accent">Export Curated Markdown</button>
+      </div>
+    </header>
+
+    <nav class="nav-tabs">
+      <button class="tab active" data-view="home">First Principles</button>
+      <button class="tab" data-view="seams">Seam Map</button>
+      <button class="tab" data-view="search">Search</button>
+      <button class="tab" data-view="diff">Diff</button>
+      <button class="tab" data-view="poc">POC Plan</button>
+      <button class="tab" data-view="curation">Curation</button>
+      <button class="tab" data-view="report">Embedded Report</button>
+    </nav>
+
+    <main id="app" class="app-shell" aria-live="polite"></main>
+
+    <template id="snippet-card-template">
+      <article class="snippet-card">
+        <header class="snippet-head"></header>
+        <div class="snippet-actions"></div>
+        <div class="snippet-body"></div>
+        <div class="snippet-extra"></div>
+      </article>
+    </template>
+
+    <script src="./vendor/prism.js"></script>
+    <script src="./vendor/diff.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

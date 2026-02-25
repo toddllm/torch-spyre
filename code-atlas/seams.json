@@ -1,0 +1,1064 @@
+[
+  {
+    "id": "first_principles_prefill_decode",
+    "title": "Prefill vs decode scheduling model",
+    "summary": "How vLLM models prefill/decode in a unified scheduler and why this matters for chunking/disaggregation.",
+    "tags": [
+      "prefill",
+      "decode",
+      "scheduler",
+      "first-principles"
+    ],
+    "targets": [
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/core/sched/scheduler.py",
+        "before": 6,
+        "after": 12,
+        "max_hits": 1,
+        "literal": "There's no \"decoding phase\" nor \"prefill phase\"",
+        "target_id": "first_principles_prefill_decode__t01",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "contract",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "docs/design/paged_attention.md",
+        "before": 2,
+        "after": 18,
+        "max_hits": 1,
+        "literal": "template<typename scalar_t, int HEAD_SIZE",
+        "target_id": "first_principles_prefill_decode__t02",
+        "evidence_kind": "design_reference",
+        "story_kind": "data_structure",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "examples/online_serving/disaggregated_prefill.sh",
+        "before": 2,
+        "after": 24,
+        "max_hits": 2,
+        "literal": "disaggregated",
+        "target_id": "first_principles_prefill_decode__t03",
+        "evidence_kind": "runtime_example",
+        "story_kind": "example",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/core/scheduler.py",
+        "before": 4,
+        "after": 18,
+        "max_hits": 1,
+        "literal": "The prefill vs. decode priority policy",
+        "target_id": "first_principles_prefill_decode__t04",
+        "evidence_kind": "current_state",
+        "story_kind": "divergence",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "platform_plugin_registration",
+    "title": "Platform plugin registration",
+    "summary": "Entrypoints and plugin registration for vLLM and Spyre stacks.",
+    "tags": [
+      "platform",
+      "entrypoint",
+      "plugin"
+    ],
+    "targets": [
+      {
+        "repo": "vllm",
+        "file": "docs/design/plugin_system.md",
+        "before": 5,
+        "after": 20,
+        "max_hits": 2,
+        "literal": "vllm.platform_plugins",
+        "target_id": "platform_plugin_registration__t01",
+        "evidence_kind": "design_reference",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "pyproject.toml",
+        "before": 1,
+        "after": 4,
+        "max_hits": 1,
+        "literal": "[project.entry-points.\"vllm.platform_plugins\"]",
+        "target_id": "platform_plugin_registration__t02",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/__init__.py",
+        "before": 1,
+        "after": 6,
+        "max_hits": 1,
+        "literal": "def register()",
+        "target_id": "platform_plugin_registration__t03",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre_next/vllm_spyre_next/__init__.py",
+        "before": 1,
+        "after": 6,
+        "max_hits": 1,
+        "literal": "def register()",
+        "target_id": "platform_plugin_registration__t04",
+        "evidence_kind": "target_state",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "platform_resolution_interface",
+    "title": "Platform resolution + interface seams",
+    "summary": "Where vLLM selects a platform and which methods plugins are expected to provide.",
+    "tags": [
+      "platform",
+      "interface",
+      "get_attn_backend_cls"
+    ],
+    "targets": [
+      {
+        "repo": "vllm",
+        "file": "vllm/platforms/__init__.py",
+        "symbol": "resolve_current_platform_cls_qualname",
+        "target_id": "platform_resolution_interface__t01",
+        "evidence_kind": "upstream_contract",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/platforms/interface.py",
+        "symbol": "Platform",
+        "target_id": "platform_resolution_interface__t02",
+        "evidence_kind": "upstream_contract",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/platforms/interface.py",
+        "symbol": "Platform.get_attn_backend_cls",
+        "target_id": "platform_resolution_interface__t03",
+        "evidence_kind": "upstream_contract",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/platforms/interface.py",
+        "symbol": "Platform.check_and_update_config",
+        "target_id": "platform_resolution_interface__t04",
+        "evidence_kind": "upstream_contract",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/platform.py",
+        "symbol": "SpyrePlatform.check_and_update_config",
+        "target_id": "platform_resolution_interface__t05",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre_next/vllm_spyre_next/platform.py",
+        "symbol": "TorchSpyrePlatform.check_and_update_config",
+        "target_id": "platform_resolution_interface__t06",
+        "evidence_kind": "target_state",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "attention_backend_contract",
+    "title": "Attention backend contract and metadata",
+    "summary": "Core AttentionBackend API and shared metadata fields consumed by backends.",
+    "tags": [
+      "attention",
+      "kv",
+      "slot_mapping",
+      "block_table_tensor"
+    ],
+    "targets": [
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/attention/backend.py",
+        "symbol": "AttentionBackend",
+        "target_id": "attention_backend_contract__t01",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "contract",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/attention/backend.py",
+        "symbol": "CommonAttentionMetadata",
+        "target_id": "attention_backend_contract__t02",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "data_structure",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/attention/backends/registry.py",
+        "symbol": "register_backend",
+        "target_id": "attention_backend_contract__t03",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "call_site",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/attention/backends/cpu_attn.py",
+        "symbol": "CPUAttentionBackend.get_kv_cache_shape",
+        "target_id": "attention_backend_contract__t04",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "data_structure",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/attention/backends/flash_attn.py",
+        "symbol": "FlashAttentionBackend.get_kv_cache_stride_order",
+        "target_id": "attention_backend_contract__t05",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "data_structure",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/model_executor/model_loader/spyre.py",
+        "before": 6,
+        "after": 12,
+        "max_hits": 1,
+        "literal": "attn_name=self.attention_name",
+        "target_id": "attention_backend_contract__t06",
+        "evidence_kind": "current_state",
+        "story_kind": "divergence",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/worker/spyre_model_runner.py",
+        "symbol": "BaseSpyreModelRunner.get_kv_cache_spec",
+        "target_id": "attention_backend_contract__t07",
+        "evidence_kind": "current_state",
+        "story_kind": "divergence",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "block_table_slot_mapping",
+    "title": "Block table and slot mapping",
+    "summary": "Paged KV indexing path used by attention metadata builders and runners.",
+    "tags": [
+      "block_table",
+      "slot_mapping",
+      "paged-kv"
+    ],
+    "targets": [
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/worker/block_table.py",
+        "symbol": "BlockTable.compute_slot_mapping",
+        "target_id": "block_table_slot_mapping__t01",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "data_structure",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/worker/block_table.py",
+        "symbol": "BlockTable.commit_slot_mapping",
+        "target_id": "block_table_slot_mapping__t02",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "lifecycle",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/core/kv_cache_manager.py",
+        "symbol": "KVCacheManager.get_computed_blocks",
+        "target_id": "block_table_slot_mapping__t03",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "call_site",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/core/kv_cache_manager.py",
+        "symbol": "KVCacheManager.allocate_slots",
+        "target_id": "block_table_slot_mapping__t04",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "lifecycle",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/model_executor/model_loader/spyre.py",
+        "before": 6,
+        "after": 12,
+        "max_hits": 1,
+        "literal": "slot_mapping=attn_metadata.slot_mapping",
+        "target_id": "block_table_slot_mapping__t05",
+        "evidence_kind": "current_state",
+        "story_kind": "divergence",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "scheduler_connector_hooks",
+    "title": "Scheduler hooks for KV connector",
+    "summary": "Where the scheduler calls connector query/update/build metadata hooks.",
+    "tags": [
+      "scheduler",
+      "connector",
+      "kv-transfer"
+    ],
+    "targets": [
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/core/sched/scheduler.py",
+        "before": 10,
+        "after": 18,
+        "max_hits": 1,
+        "literal": "self.connector.get_num_new_matched_tokens",
+        "target_id": "scheduler_connector_hooks__t01",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "call_site",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/core/sched/scheduler.py",
+        "before": 8,
+        "after": 14,
+        "max_hits": 1,
+        "literal": "self.connector.update_state_after_alloc",
+        "target_id": "scheduler_connector_hooks__t02",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "lifecycle",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/core/sched/scheduler.py",
+        "before": 8,
+        "after": 12,
+        "max_hits": 1,
+        "literal": "self.connector.build_connector_meta",
+        "target_id": "scheduler_connector_hooks__t03",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "data_structure",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/core/scheduler.py",
+        "symbol": "ChunkedPrefillSpyreScheduler.schedule",
+        "target_id": "scheduler_connector_hooks__t04",
+        "evidence_kind": "current_state",
+        "story_kind": "divergence",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "kv_connector_base_v1",
+    "title": "KV connector v1 lifecycle contract",
+    "summary": "Worker-side and scheduler-side abstract methods required for disaggregation.",
+    "tags": [
+      "KVConnectorBase_V1",
+      "disaggregation",
+      "lifecycle"
+    ],
+    "targets": [
+      {
+        "repo": "vllm",
+        "file": "vllm/distributed/kv_transfer/kv_connector/v1/base.py",
+        "symbol": "KVConnectorBase_V1",
+        "target_id": "kv_connector_base_v1__t01",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "contract",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/distributed/kv_transfer/kv_connector/v1/base.py",
+        "before": 2,
+        "after": 22,
+        "max_hits": 1,
+        "literal": "def start_load_kv",
+        "target_id": "kv_connector_base_v1__t02",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "lifecycle",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/distributed/kv_transfer/kv_connector/v1/base.py",
+        "before": 2,
+        "after": 24,
+        "max_hits": 1,
+        "literal": "def get_num_new_matched_tokens",
+        "target_id": "kv_connector_base_v1__t03",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "call_site",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/distributed/kv_transfer/kv_connector/v1/base.py",
+        "before": 2,
+        "after": 16,
+        "max_hits": 1,
+        "literal": "def build_connector_meta",
+        "target_id": "kv_connector_base_v1__t04",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "data_structure",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/v1/worker/kv_connector_model_runner_mixin.py",
+        "before": 8,
+        "after": 16,
+        "max_hits": 1,
+        "literal": "kv_connector.start_load_kv",
+        "target_id": "kv_connector_base_v1__t05",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "call_site",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "decode_bench_reference",
+    "title": "DecodeBenchConnector reference implementation",
+    "summary": "Useful template for a minimal connector implementation and metadata flow.",
+    "tags": [
+      "connector",
+      "DecodeBenchConnector",
+      "reference"
+    ],
+    "targets": [
+      {
+        "repo": "vllm",
+        "file": "vllm/distributed/kv_transfer/kv_connector/v1/decode_bench_connector.py",
+        "symbol": "DecodeBenchConnector",
+        "target_id": "decode_bench_reference__t01",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "example",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/distributed/kv_transfer/kv_connector/v1/decode_bench_connector.py",
+        "symbol": "DecodeBenchConnectorScheduler.build_connector_meta",
+        "target_id": "decode_bench_reference__t02",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "call_site",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/distributed/kv_transfer/kv_connector/v1/decode_bench_connector.py",
+        "symbol": "DecodeBenchConnectorWorker.start_fill_kv",
+        "target_id": "decode_bench_reference__t03",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "lifecycle",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "vllm/distributed/kv_transfer/kv_connector/factory.py",
+        "before": 4,
+        "after": 8,
+        "max_hits": 2,
+        "literal": "DecodeBenchConnector",
+        "target_id": "decode_bench_reference__t04",
+        "evidence_kind": "upstream_contract",
+        "story_kind": "call_site",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "cuda_paged_attention_assumptions",
+    "title": "CUDA paged attention shape assumptions",
+    "summary": "Kernel-level expectations for k/v cache and block tables.",
+    "tags": [
+      "cuda",
+      "paged-attention",
+      "k_cache",
+      "block_tables"
+    ],
+    "targets": [
+      {
+        "repo": "vllm",
+        "file": "csrc/attention/attention_kernels.cuh",
+        "before": 6,
+        "after": 16,
+        "max_hits": 1,
+        "literal": "const cache_t* __restrict__ k_cache",
+        "target_id": "cuda_paged_attention_assumptions__t01",
+        "evidence_kind": "upstream_contract",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "csrc/attention/attention_kernels.cuh",
+        "before": 6,
+        "after": 22,
+        "max_hits": 1,
+        "literal": "const int* block_table = block_tables",
+        "target_id": "cuda_paged_attention_assumptions__t02",
+        "evidence_kind": "upstream_contract",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "csrc/attention/paged_attention_v1.cu",
+        "before": 2,
+        "after": 22,
+        "max_hits": 1,
+        "literal": "void paged_attention_v1",
+        "target_id": "cuda_paged_attention_assumptions__t03",
+        "evidence_kind": "upstream_contract",
+        "required": true
+      },
+      {
+        "repo": "vllm",
+        "file": "csrc/attention/paged_attention_v2.cu",
+        "before": 2,
+        "after": 22,
+        "max_hits": 1,
+        "literal": "void paged_attention_v2",
+        "target_id": "cuda_paged_attention_assumptions__t04",
+        "evidence_kind": "upstream_contract",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "version_alignment",
+    "title": "Version alignment and dependency bands",
+    "summary": "Current plugin generation version targeting for vLLM and FMS dependencies.",
+    "tags": [
+      "version",
+      "dependency",
+      "alignment"
+    ],
+    "targets": [
+      {
+        "repo": "vllm-spyre",
+        "file": "pyproject.toml",
+        "before": 2,
+        "after": 8,
+        "max_hits": 2,
+        "literal": "ibm-fms>=",
+        "target_id": "version_alignment__t01",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "pyproject.toml",
+        "before": 2,
+        "after": 8,
+        "max_hits": 2,
+        "literal": "vllm>=",
+        "target_id": "version_alignment__t02",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre_next/pyproject.toml",
+        "before": 2,
+        "after": 8,
+        "max_hits": 1,
+        "literal": "vllm>=",
+        "target_id": "version_alignment__t03",
+        "evidence_kind": "target_state",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "spyre_platform_wiring",
+    "title": "vllm-spyre platform wiring (today)",
+    "summary": "How SpyrePlatform wires custom worker/scheduler and scheduler/cache constraints.",
+    "tags": [
+      "vllm-spyre",
+      "platform",
+      "check_and_update_config"
+    ],
+    "targets": [
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/platform.py",
+        "symbol": "SpyrePlatform",
+        "target_id": "spyre_platform_wiring__t01",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/platform.py",
+        "symbol": "SpyrePlatform.check_and_update_config",
+        "target_id": "spyre_platform_wiring__t02",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/platform.py",
+        "before": 4,
+        "after": 12,
+        "max_hits": 1,
+        "literal": "scheduler_config.async_scheduling = False",
+        "target_id": "spyre_platform_wiring__t03",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/platform.py",
+        "before": 6,
+        "after": 14,
+        "max_hits": 1,
+        "literal": "cache_config.block_size = model_config.max_model_len",
+        "target_id": "spyre_platform_wiring__t04",
+        "evidence_kind": "current_state",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "spyre_custom_scheduler",
+    "title": "vllm-spyre custom scheduler constraints",
+    "summary": "Chunked prefill scheduler policy and hardware-specific constraints.",
+    "tags": [
+      "scheduler",
+      "chunked-prefill",
+      "constraints"
+    ],
+    "targets": [
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/core/scheduler.py",
+        "symbol": "ChunkedPrefillSpyreScheduler",
+        "target_id": "spyre_custom_scheduler__t01",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/core/scheduler.py",
+        "symbol": "ChunkedPrefillSpyreScheduler.schedule",
+        "target_id": "spyre_custom_scheduler__t02",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/core/scheduler.py",
+        "symbol": "ChunkedPrefillSpyreScheduler.can_schedule_prefill",
+        "target_id": "spyre_custom_scheduler__t03",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/core/scheduler.py",
+        "symbol": "ChunkedPrefillSpyreScheduler.check_batch_tkv_limit_cp",
+        "target_id": "spyre_custom_scheduler__t04",
+        "evidence_kind": "current_state",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "spyre_worker_kv_fakery",
+    "title": "vllm-spyre worker KV-cache compatibility shim",
+    "summary": "Worker returns fake cache sizing and leaves vLLM KV cache uninitialized in today stack.",
+    "tags": [
+      "worker",
+      "kv",
+      "shim"
+    ],
+    "targets": [
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/worker/spyre_worker.py",
+        "symbol": "SpyreWorker.determine_available_memory",
+        "target_id": "spyre_worker_kv_fakery__t01",
+        "evidence_kind": "current_state",
+        "story_kind": "divergence",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/worker/spyre_worker.py",
+        "symbol": "SpyreWorker.initialize_from_config",
+        "target_id": "spyre_worker_kv_fakery__t02",
+        "evidence_kind": "current_state",
+        "story_kind": "call_site",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/worker/spyre_worker.py",
+        "symbol": "SpyreWorker.kv_cache",
+        "target_id": "spyre_worker_kv_fakery__t03",
+        "evidence_kind": "current_state",
+        "story_kind": "data_structure",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "spyre_model_runner_kv_spec",
+    "title": "vllm-spyre model runner KV spec + cache-hit planning",
+    "summary": "Dummy KV spec due to FMS path and local planning using FullAttentionManager.",
+    "tags": [
+      "model-runner",
+      "kv-spec",
+      "prefix-cache"
+    ],
+    "targets": [
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/worker/spyre_model_runner.py",
+        "symbol": "BaseSpyreModelRunner.get_kv_cache_spec",
+        "target_id": "spyre_model_runner_kv_spec__t01",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/v1/worker/spyre_model_runner.py",
+        "before": 8,
+        "after": 16,
+        "max_hits": 1,
+        "literal": "FullAttentionManager.find_longest_cache_hit",
+        "target_id": "spyre_model_runner_kv_spec__t02",
+        "evidence_kind": "current_state",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "spyre_fms_loader_compile",
+    "title": "FMS loader and torch.compile path in vllm-spyre",
+    "summary": "Current stack ties model loading and attention metadata to FMS and selected compile backend.",
+    "tags": [
+      "fms",
+      "torch.compile",
+      "attention-metadata"
+    ],
+    "targets": [
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/model_executor/model_loader/spyre.py",
+        "before": 6,
+        "after": 20,
+        "max_hits": 1,
+        "literal": "from fms.models import get_model",
+        "target_id": "spyre_fms_loader_compile__t01",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/model_executor/model_loader/spyre.py",
+        "before": 8,
+        "after": 14,
+        "max_hits": 1,
+        "literal": "self.fms_model = torch.compile",
+        "target_id": "spyre_fms_loader_compile__t02",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/model_executor/model_loader/spyre.py",
+        "before": 8,
+        "after": 16,
+        "max_hits": 1,
+        "literal": "past_key_value_states=self.past_key_value_states",
+        "target_id": "spyre_fms_loader_compile__t03",
+        "evidence_kind": "current_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre/model_executor/model_loader/spyre.py",
+        "symbol": "SpyreCausalLM.set_past_key_value_states",
+        "target_id": "spyre_fms_loader_compile__t04",
+        "evidence_kind": "current_state",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "spyre_next_platform_scaffold",
+    "title": "vllm-spyre-next platform scaffold",
+    "summary": "CPU-path baseline and explicit placeholder comments for custom components.",
+    "tags": [
+      "vllm-spyre-next",
+      "platform",
+      "cpu-path"
+    ],
+    "targets": [
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre_next/vllm_spyre_next/platform.py",
+        "symbol": "TorchSpyrePlatform",
+        "target_id": "spyre_next_platform_scaffold__t01",
+        "evidence_kind": "target_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre_next/vllm_spyre_next/platform.py",
+        "symbol": "TorchSpyrePlatform.check_and_update_config",
+        "target_id": "spyre_next_platform_scaffold__t02",
+        "evidence_kind": "target_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre_next/examples/torch_spyre_inference.py",
+        "before": 2,
+        "after": 12,
+        "max_hits": 1,
+        "contains_all": [
+          "new stack",
+          "CPU"
+        ],
+        "target_id": "spyre_next_platform_scaffold__t03",
+        "evidence_kind": "target_state",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "spyre_next_stubs",
+    "title": "vllm-spyre-next worker/model-runner/scheduler stubs",
+    "summary": "Current implementation status for next-generation plugin classes.",
+    "tags": [
+      "vllm-spyre-next",
+      "NotImplementedError",
+      "status"
+    ],
+    "targets": [
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre_next/vllm_spyre_next/v1/worker/spyre_worker.py",
+        "before": 2,
+        "after": 4,
+        "max_hits": 1,
+        "literal": "NotImplementedError",
+        "target_id": "spyre_next_stubs__t01",
+        "evidence_kind": "target_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre_next/vllm_spyre_next/v1/worker/spyre_model_runner.py",
+        "before": 2,
+        "after": 4,
+        "max_hits": 1,
+        "literal": "NotImplementedError",
+        "target_id": "spyre_next_stubs__t02",
+        "evidence_kind": "target_state",
+        "required": true
+      },
+      {
+        "repo": "vllm-spyre",
+        "file": "vllm_spyre_next/vllm_spyre_next/v1/core/scheduler.py",
+        "before": 2,
+        "after": 4,
+        "max_hits": 1,
+        "literal": "NotImplementedError",
+        "target_id": "spyre_next_stubs__t03",
+        "evidence_kind": "target_state",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "torch_spyre_backend_registration",
+    "title": "torch-spyre backend registration",
+    "summary": "PrivateUse1 backend setup and torch backend entrypoint registration.",
+    "tags": [
+      "torch-spyre",
+      "PrivateUse1",
+      "backend"
+    ],
+    "targets": [
+      {
+        "repo": "torch-spyre",
+        "file": "pyproject.toml",
+        "before": 1,
+        "after": 6,
+        "max_hits": 1,
+        "literal": "[project.entry-points.\"torch.backends\"]",
+        "target_id": "torch_spyre_backend_registration__t01",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      },
+      {
+        "repo": "torch-spyre",
+        "file": "torch_spyre/__init__.py",
+        "before": 6,
+        "after": 14,
+        "max_hits": 1,
+        "literal": "rename_privateuse1_backend",
+        "target_id": "torch_spyre_backend_registration__t02",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      },
+      {
+        "repo": "torch-spyre",
+        "file": "README.md",
+        "before": 2,
+        "after": 8,
+        "max_hits": 2,
+        "literal": "PrivateUse1",
+        "target_id": "torch_spyre_backend_registration__t03",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "torch_spyre_inductor_hooks",
+    "title": "torch-spyre Inductor integration hooks",
+    "summary": "register_backend_for_device, overrides, and monkey patches used to integrate with Inductor flow.",
+    "tags": [
+      "torch-spyre",
+      "inductor",
+      "aot_autograd",
+      "compile_to_module"
+    ],
+    "targets": [
+      {
+        "repo": "torch-spyre",
+        "file": "torch_spyre/_inductor/__init__.py",
+        "before": 8,
+        "after": 20,
+        "max_hits": 1,
+        "literal": "register_backend_for_device",
+        "target_id": "torch_spyre_inductor_hooks__t01",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      },
+      {
+        "repo": "torch-spyre",
+        "file": "torch_spyre/_inductor/__init__.py",
+        "before": 8,
+        "after": 16,
+        "max_hits": 2,
+        "literal": "aot_autograd",
+        "target_id": "torch_spyre_inductor_hooks__t02",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      },
+      {
+        "repo": "torch-spyre",
+        "file": "docs/CompilerArchitecture.md",
+        "before": 4,
+        "after": 14,
+        "max_hits": 1,
+        "contains_all": [
+          "front-end compiler",
+          "Inductor backend"
+        ],
+        "target_id": "torch_spyre_inductor_hooks__t03",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "torch_spyre_runtime_gaps",
+    "title": "torch-spyre runtime gaps (fallbacks/copy/stream-event)",
+    "summary": "Known limitations affecting production disaggregation and efficient host/device KV movement.",
+    "tags": [
+      "fallback",
+      "copy",
+      "stream",
+      "event",
+      "limitations"
+    ],
+    "targets": [
+      {
+        "repo": "torch-spyre",
+        "file": "torch_spyre/fallbacks.py",
+        "before": 2,
+        "after": 34,
+        "max_hits": 1,
+        "literal": "def register_fallback",
+        "target_id": "torch_spyre_runtime_gaps__t01",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      },
+      {
+        "repo": "torch-spyre",
+        "file": "torch_spyre/_inductor/preload.py",
+        "before": 4,
+        "after": 12,
+        "max_hits": 1,
+        "literal": "rely on implicit fallbacks",
+        "target_id": "torch_spyre_runtime_gaps__t02",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      },
+      {
+        "repo": "torch-spyre",
+        "file": "torch_spyre/csrc/spyre_mem.cpp",
+        "before": 4,
+        "after": 20,
+        "max_hits": 1,
+        "literal": "TODO(tmhoangt): add type conversion node",
+        "target_id": "torch_spyre_runtime_gaps__t03",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      },
+      {
+        "repo": "torch-spyre",
+        "file": "torch_spyre/csrc/spyre_mem.cpp",
+        "before": 4,
+        "after": 10,
+        "max_hits": 1,
+        "literal": "FIXME: This will need to be addressed for proper spyre to spyre copy",
+        "target_id": "torch_spyre_runtime_gaps__t04",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      },
+      {
+        "repo": "torch-spyre",
+        "file": "torch_spyre/csrc/spyre_hooks.cpp",
+        "before": 4,
+        "after": 10,
+        "max_hits": 6,
+        "literal": "not implemented on spyre - do nothing",
+        "target_id": "torch_spyre_runtime_gaps__t05",
+        "evidence_kind": "runtime_constraints",
+        "required": true
+      }
+    ]
+  }
+]

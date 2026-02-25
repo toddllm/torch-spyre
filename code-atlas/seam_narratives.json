@@ -1,0 +1,641 @@
+{
+  "seams": {
+    "first_principles_prefill_decode": {
+      "layer": "runtime",
+      "question": "How does upstream vLLM represent prefill and decode work in one scheduler, and where does Spyre diverge?",
+      "why_it_matters": "Chunking, prefix reuse, and disaggregated prefill/decode all depend on token-progress semantics rather than phase labels.",
+      "decision_target": "Design choice decision",
+      "decision_answer": "Use upstream token-progress scheduler semantics as the source of truth; keep Spyre policy constraints as additive behavior only.",
+      "claims": [
+        "Upstream scheduler semantics are unified around token progress rather than a hard prefill/decode phase split.",
+        "Chunked prefill and connector behavior should be derived from this unified scheduling model.",
+        "Spyre custom scheduling policy must be treated as a divergence layer, not the base contract."
+      ],
+      "recommendation": {
+        "now": "Use upstream scheduler semantics as baseline in all seam comparisons and POC harnesses.",
+        "depends_on": "Requires explicit mapping from Spyre policy constraints to upstream-compatible scheduling invariants.",
+        "success_test": "Run identical prompt/decode progress traces against upstream and Spyre-next scheduling paths and compare token progression events."
+      },
+      "reading_checklist": [
+        "Find upstream comments/logic showing no hard prefill-vs-decode phase split.",
+        "Trace how num_computed_tokens progression drives scheduling decisions.",
+        "Compare Spyre custom scheduler policies to see what is hardware-specific vs architectural."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Baseline scheduling semantics and disaggregated example wiring.",
+        "vllm-spyre": "Custom policy for chunked prefill priorities and hardware constraints.",
+        "vllm-spyre-next": "Should inherit upstream semantics; avoid reintroducing custom phase model.",
+        "torch-spyre": "Not scheduler-owned, but runtime limits can indirectly influence scheduler-safe policies."
+      },
+      "common_pitfalls": [
+        "Assuming prefill/decode are separate schedulers instead of a unified token-progress loop.",
+        "Treating chunked prefill policy as equivalent to connector lifecycle requirements."
+      ],
+      "related_seams": [
+        "block_table_slot_mapping",
+        "scheduler_connector_hooks",
+        "spyre_custom_scheduler"
+      ],
+      "poc_links": [
+        "poc1",
+        "poc2"
+      ]
+    },
+    "platform_plugin_registration": {
+      "layer": "platform",
+      "question": "Where is platform plugin registration declared and how are Spyre generations exposed to vLLM?",
+      "why_it_matters": "If registration and entrypoints are unclear, all downstream comparisons can be against the wrong platform class.",
+      "reading_checklist": [
+        "Locate platform entrypoints in pyproject and register() return values.",
+        "Confirm both vllm-spyre and vllm-spyre-next registration paths.",
+        "Cross-check upstream plugin-system docs with concrete registration code."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Documents expected entrypoint shape and resolution contract.",
+        "vllm-spyre": "Current plugin entry wiring for today stack.",
+        "vllm-spyre-next": "Separate registration path for next-generation platform.",
+        "torch-spyre": "No vLLM platform entrypoint here; backend integration happens through torch runtime."
+      },
+      "common_pitfalls": [
+        "Confusing Python package entrypoint registration with runtime platform selection logic.",
+        "Assuming next path is active without checking entrypoint and platform resolution."
+      ],
+      "related_seams": [
+        "platform_resolution_interface",
+        "spyre_platform_wiring",
+        "spyre_next_platform_scaffold"
+      ],
+      "poc_links": [
+        "poc1"
+      ]
+    },
+    "platform_resolution_interface": {
+      "layer": "platform",
+      "question": "Which platform interface methods define extension seams for worker/model-runner/attention backend wiring?",
+      "why_it_matters": "This is the control plane that decides whether Spyre uses upstream abstractions or a forked execution path.",
+      "reading_checklist": [
+        "Inspect platform resolution function and environment/config branching.",
+        "Inspect interface methods such as check_and_update_config/get_attn_backend_cls.",
+        "Compare concrete Spyre and Spyre-next overrides against interface intent."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Defines contract and selection logic for current platform class.",
+        "vllm-spyre": "Overrides config and backend selection with custom constraints.",
+        "vllm-spyre-next": "Expected to keep only necessary overrides and lean on upstream internals.",
+        "torch-spyre": "Provides device/compiler hooks consumed indirectly after platform selection."
+      },
+      "common_pitfalls": [
+        "Overfocusing on one override and missing adjacent interface obligations.",
+        "Treating check_and_update_config as a minor helper; it can reshape runtime behavior."
+      ],
+      "related_seams": [
+        "platform_plugin_registration",
+        "spyre_platform_wiring",
+        "attention_backend_contract"
+      ],
+      "poc_links": [
+        "poc1"
+      ]
+    },
+    "attention_backend_contract": {
+      "layer": "kv_memory",
+      "question": "What is the explicit attention backend contract for KV shape/stride/metadata, and where must Spyre conform?",
+      "why_it_matters": "A correctness-first backend can be slow, but it must honor this contract exactly to work with block manager + scheduler.",
+      "decision_target": "Interface decision",
+      "decision_answer": "Yes, correctness-first backend is feasible now if it consumes slot_mapping/block tables and preserves KV shape/stride contract exactly.",
+      "claims": [
+        "AttentionBackend methods define explicit KV cache shape/stride ownership boundaries.",
+        "Metadata fields (slot_mapping, block_table_tensor, sequence metadata) are required contract inputs, not optional hints.",
+        "Spyre-next should implement gather/scatter correctness path first, then optimize layout-native execution."
+      ],
+      "recommendation": {
+        "now": "Implement a correctness-first backend in vllm-spyre-next that validates shape/stride/metadata conformance before performance optimization.",
+        "depends_on": "Requires stable slot_mapping and block table semantics from block manager and runner paths.",
+        "success_test": "Compare prefill+1..N decode logits against upstream CPU backend with identical seeds and metadata under chunked prefill enabled."
+      },
+      "reading_checklist": [
+        "Read AttentionBackend API methods around KV cache shape and stride expectations.",
+        "Locate metadata fields (slot_mapping, block tables, sequence metadata) consumed by backends.",
+        "Compare upstream CPU/CUDA backends with current Spyre attention wiring points."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Canonical contract and reference backend behaviors.",
+        "vllm-spyre": "Current path routes through FMS integration points and model-runner glue.",
+        "vllm-spyre-next": "Primary seam for correctness-first backend implementation.",
+        "torch-spyre": "Compiler/runtime capability gates whether backend implementation can stay fused or needs fallbacks."
+      },
+      "common_pitfalls": [
+        "Mixing logical KV layout intent with physical memory stride implementation details.",
+        "Ignoring metadata field semantics and only matching tensor shapes."
+      ],
+      "related_seams": [
+        "block_table_slot_mapping",
+        "cuda_paged_attention_assumptions",
+        "spyre_model_runner_kv_spec"
+      ],
+      "poc_links": [
+        "poc1"
+      ]
+    },
+    "block_table_slot_mapping": {
+      "layer": "kv_memory",
+      "question": "How do block tables and slot mapping translate sequence positions into paged KV memory locations?",
+      "why_it_matters": "Every correctness and transfer story relies on this mapping being consistent across scheduler, runner, backend, and connector.",
+      "decision_target": "Interface decision",
+      "decision_answer": "Treat block table plus slot mapping as the canonical address contract; every backend/connector must consume it directly.",
+      "claims": [
+        "Block tables and slot mappings are the canonical translation layer from logical tokens to physical KV locations.",
+        "Any connector or backend path that bypasses this mapping risks incompatible KV ownership semantics.",
+        "Spyre-next integration should preserve this mapping end-to-end and avoid local reinterpretation."
+      ],
+      "recommendation": {
+        "now": "Document a minimum Spyre paged-KV metadata contract keyed to slot_mapping and block table semantics.",
+        "depends_on": "Requires agreement on layer/block/dtype/head-dim metadata fields consumed by attention and connector paths.",
+        "success_test": "Add tests that validate slot_mapping-driven gather/scatter equivalence across heterogeneous sequence lengths."
+      },
+      "reading_checklist": [
+        "Inspect slot mapping compute/commit flow in worker block table code.",
+        "Inspect KVCacheManager allocation and computed-block retrieval logic.",
+        "Find where Spyre path consumes slot_mapping in model execution."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Defines canonical mapping lifecycle for paged KV cache.",
+        "vllm-spyre": "Uses mapping values but with compatibility shims in today stack.",
+        "vllm-spyre-next": "Must consume same mapping contract to avoid scheduler divergence.",
+        "torch-spyre": "Impacts copy/movement efficiency when mapped blocks need transfer."
+      },
+      "common_pitfalls": [
+        "Treating block tables as optional metadata rather than required address translation.",
+        "Testing only contiguous prompts and missing heterogeneous sequence behavior."
+      ],
+      "related_seams": [
+        "attention_backend_contract",
+        "scheduler_connector_hooks",
+        "cuda_paged_attention_assumptions"
+      ],
+      "poc_links": [
+        "poc1",
+        "poc2"
+      ]
+    },
+    "scheduler_connector_hooks": {
+      "layer": "disaggregation",
+      "question": "Where does scheduler interact with connector lifecycle and token matching decisions?",
+      "why_it_matters": "Disaggregated prefill-decode only works when connector hooks run at the right time with the right metadata.",
+      "decision_target": "Feasibility decision",
+      "decision_answer": "Yes, minimal connector is feasible without scheduler fork if Spyre path follows upstream hook ordering and metadata ownership.",
+      "claims": [
+        "Scheduler already provides ordered connector hooks for token matching, allocation updates, and connector metadata construction.",
+        "Connector should consume scheduler-owned metadata rather than recomputing block ownership.",
+        "Spyre scheduler divergence should be minimized for disaggregated connector POCs."
+      ],
+      "recommendation": {
+        "now": "Instrument scheduler hook ordering in upstream and mirror that sequence in Spyre-next connector integration.",
+        "depends_on": "Requires connector metadata schema alignment with block manager outputs and runner inputs.",
+        "success_test": "Disaggregated prefill/decode run shows expected hook order with shared-prefix reuse and no metadata reconstruction in connector."
+      },
+      "reading_checklist": [
+        "Locate get_num_new_matched_tokens calls in scheduling path.",
+        "Locate update_state_after_alloc and build_connector_meta call sites.",
+        "Compare with Spyre custom scheduler to identify integration gaps."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Reference timing for connector method invocations.",
+        "vllm-spyre": "Current custom scheduler path where connector support may be partial/absent.",
+        "vllm-spyre-next": "Should preserve upstream ordering while adding Spyre-specific connector implementation.",
+        "torch-spyre": "Runtime transfer limitations can force connector behavior tradeoffs."
+      },
+      "common_pitfalls": [
+        "Implementing connector methods without validating scheduler call ordering.",
+        "Assuming connector metadata can be delayed until worker step without schedule-time context."
+      ],
+      "related_seams": [
+        "kv_connector_base_v1",
+        "decode_bench_reference",
+        "first_principles_prefill_decode"
+      ],
+      "poc_links": [
+        "poc2"
+      ]
+    },
+    "kv_connector_base_v1": {
+      "layer": "disaggregation",
+      "question": "What methods and invariants does KVConnectorBase_V1 require for scheduler-side and worker-side behavior?",
+      "why_it_matters": "This is the formal API surface for disaggregated KV movement; POC connector must satisfy this contract first.",
+      "decision_target": "Feasibility decision",
+      "decision_answer": "Yes, a correctness-first Spyre connector can be implemented today with in-memory storage while preserving full v1 lifecycle semantics.",
+      "claims": [
+        "KVConnectorBase_V1 defines lifecycle-oriented scheduler and worker responsibilities independent of specific transport/runtime implementations.",
+        "A minimal in-memory connector can validate control flow and metadata ownership before introducing transport complexity.",
+        "Connector success depends on attention/backend compliance with the same slot_mapping/block mapping contract."
+      ],
+      "recommendation": {
+        "now": "Implement SpyreKVConnector as in-memory `(request_id, layer, block_id)` store with explicit lifecycle logging.",
+        "depends_on": "Requires attention backend and runner to consume scheduler-built block/slot metadata without local reinterpretation.",
+        "success_test": "Disaggregated prefill then decode reuses shared-prefix KV via connector hooks without recomputing prompt KV."
+      },
+      "reading_checklist": [
+        "Read abstract methods grouped by scheduler-side and worker-side responsibilities.",
+        "Trace start_load_kv/wait_for_layer_load and save/wait calls.",
+        "Inspect runner mixins that invoke connector methods in execution path."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Authoritative interface contract and runtime integration points.",
+        "vllm-spyre": "Current path mostly outside this contract; highlights migration need.",
+        "vllm-spyre-next": "Primary target for minimal in-memory connector implementation.",
+        "torch-spyre": "Device/host movement constraints influence implementation strategy but not interface shape."
+      },
+      "common_pitfalls": [
+        "Implementing only worker methods and forgetting scheduler-side methods.",
+        "Skipping metadata completeness (dtype/block size/layer mapping) during early POC."
+      ],
+      "related_seams": [
+        "scheduler_connector_hooks",
+        "decode_bench_reference",
+        "block_table_slot_mapping"
+      ],
+      "poc_links": [
+        "poc2"
+      ]
+    },
+    "decode_bench_reference": {
+      "layer": "disaggregation",
+      "question": "How does DecodeBenchConnector implement connector lifecycle in a concrete, traceable way?",
+      "why_it_matters": "A working reference reduces ambiguity for Spyre connector POC and clarifies expected metadata/control flow.",
+      "reading_checklist": [
+        "Inspect connector class and split between scheduler-side and worker-side objects.",
+        "Inspect build_connector_meta and start_fill/load methods.",
+        "Inspect factory selection path to see how connector is instantiated."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Reference implementation template for minimal viable connector.",
+        "vllm-spyre": "Useful baseline to avoid inventing custom connector semantics.",
+        "vllm-spyre-next": "Best starting point for in-memory connector skeleton.",
+        "torch-spyre": "Runtime constraints may alter storage/copy strategies, not lifecycle semantics."
+      },
+      "common_pitfalls": [
+        "Copying implementation details without preserving API intent.",
+        "Using reference connector without validating it against Spyre KV layout contract."
+      ],
+      "related_seams": [
+        "kv_connector_base_v1",
+        "scheduler_connector_hooks"
+      ],
+      "poc_links": [
+        "poc2"
+      ]
+    },
+    "cuda_paged_attention_assumptions": {
+      "layer": "kv_memory",
+      "question": "What low-level shape/stride/block-table assumptions are encoded in CUDA paged-attention kernels?",
+      "why_it_matters": "Spyre backend must either match these assumptions logically or implement explicit translation/gather/scatter.",
+      "reading_checklist": [
+        "Read kernel signatures for q/k_cache/v_cache and block_tables.",
+        "Inspect where block table indexing is converted into cache pointers.",
+        "Map assumptions back to backend API shape/stride methods."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Ground truth for performant paged-attention physical layout assumptions.",
+        "vllm-spyre": "Current path may emulate semantics through different internal structures.",
+        "vllm-spyre-next": "Correctness backend can start gather/scatter then optimize toward kernel-friendly layout.",
+        "torch-spyre": "Kernel/runtime support determines how far toward native layout optimization we can go."
+      },
+      "common_pitfalls": [
+        "Assuming doc-level layout examples equal kernel-level physical assumptions.",
+        "Trying to optimize before proving shape and mapping correctness."
+      ],
+      "related_seams": [
+        "attention_backend_contract",
+        "block_table_slot_mapping"
+      ],
+      "poc_links": [
+        "poc1"
+      ]
+    },
+    "version_alignment": {
+      "layer": "platform",
+      "question": "Which dependency bands are currently pinned across vLLM, vllm-spyre, vllm-spyre-next, and FMS usage?",
+      "why_it_matters": "Cross-repo seam comparisons can be misleading without confirming compatible version bands first.",
+      "reading_checklist": [
+        "Inspect pyproject constraints for vllm and ibm-fms.",
+        "Inspect vllm_spyre_next dependency declarations.",
+        "Use this seam before interpreting any behavior mismatch as a design issue."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Reference API/version surface.",
+        "vllm-spyre": "Current dependency constraints and legacy requirements.",
+        "vllm-spyre-next": "Targeted toward upstream compatibility band with reduced custom deps.",
+        "torch-spyre": "Compiler/runtime package version influences compile path behavior."
+      },
+      "common_pitfalls": [
+        "Comparing branches/commits across incompatible version bands.",
+        "Attributing dependency mismatch failures to architecture seams."
+      ],
+      "related_seams": [
+        "platform_resolution_interface",
+        "spyre_fms_loader_compile"
+      ],
+      "poc_links": [
+        "poc1",
+        "poc2"
+      ]
+    },
+    "spyre_platform_wiring": {
+      "layer": "platform",
+      "question": "How does today Spyre platform override runtime config and wire custom components?",
+      "why_it_matters": "These overrides explain why today path behaves differently from upstream and why next path is being built.",
+      "reading_checklist": [
+        "Inspect check_and_update_config for async scheduling and cache overrides.",
+        "Inspect worker/model-runner class wiring decisions.",
+        "Identify which decisions are temporary shims vs long-term architecture."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Defines baseline behavior being overridden.",
+        "vllm-spyre": "Current custom wiring surface and constraints.",
+        "vllm-spyre-next": "Should narrow this override surface over time.",
+        "torch-spyre": "Runtime capabilities can justify some config constraints during transition."
+      },
+      "common_pitfalls": [
+        "Treating forced config values as neutral defaults.",
+        "Assuming these overrides are required in next-generation design."
+      ],
+      "related_seams": [
+        "platform_resolution_interface",
+        "spyre_custom_scheduler",
+        "spyre_worker_kv_fakery"
+      ],
+      "poc_links": [
+        "poc1"
+      ]
+    },
+    "spyre_custom_scheduler": {
+      "layer": "runtime",
+      "question": "What extra constraints and heuristics does Spyre custom scheduler add for chunked prefill?",
+      "why_it_matters": "These policies shape throughput/latency tradeoffs and may conflict with upstream connector/scheduling assumptions.",
+      "reading_checklist": [
+        "Inspect schedule() policy branches and fairness/priority comments.",
+        "Inspect can_schedule_prefill and token/kv limit checks.",
+        "Identify which constraints are hardware-specific and candidates for removal in next path."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Reference scheduler behavior without Spyre-specific constraints.",
+        "vllm-spyre": "Current custom policy implementation.",
+        "vllm-spyre-next": "Target is to avoid custom scheduler and rely on upstream scheduling.",
+        "torch-spyre": "Hardware/runtime maturity can still impose practical scheduling limits."
+      },
+      "common_pitfalls": [
+        "Assuming custom scheduler behavior is equivalent to upstream chunked prefill semantics.",
+        "Conflating policy constraints with hard backend correctness requirements."
+      ],
+      "related_seams": [
+        "first_principles_prefill_decode",
+        "spyre_platform_wiring",
+        "scheduler_connector_hooks"
+      ],
+      "poc_links": [
+        "poc3"
+      ]
+    },
+    "spyre_worker_kv_fakery": {
+      "layer": "platform",
+      "question": "Where does today Spyre worker fake or bypass upstream KV cache initialization assumptions?",
+      "why_it_matters": "These shims are central evidence for why disaggregation and connector integration are hard in today path.",
+      "decision_target": "Feasibility decision",
+      "decision_answer": "POCs can proceed in Spyre-next, but production connector/disaggregation work is blocked if worker KV shims remain in control.",
+      "claims": [
+        "Today Spyre worker behavior includes compatibility shims that bypass upstream KV ownership expectations.",
+        "These shims are not cosmetic; they define why connector/block-manager integration is difficult in the current stack.",
+        "Spyre-next should eliminate fake KV initialization paths as early migration milestones."
+      ],
+      "recommendation": {
+        "now": "Treat worker KV shim removal as a prerequisite milestone for connector and disaggregation feature work.",
+        "depends_on": "Requires model-runner and attention backend to use upstream KV structures consistently.",
+        "success_test": "Worker reports and manages KV capacity through upstream-compatible paths with no placeholder/null KV shortcuts."
+      },
+      "reading_checklist": [
+        "Inspect available-memory and config init paths for KV sizing behavior.",
+        "Inspect kv_cache property behavior and where it returns placeholders.",
+        "Connect this seam to model-runner dummy KV spec behavior."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Expected worker memory/KV initialization contract.",
+        "vllm-spyre": "Compatibility shim behavior in today stack.",
+        "vllm-spyre-next": "Should eliminate shim by honoring upstream KV structures.",
+        "torch-spyre": "May still constrain optimal memory movement once correctness path exists."
+      },
+      "common_pitfalls": [
+        "Reading fake KV paths as temporary no-op details instead of architectural blockers.",
+        "Assuming connector work can proceed without replacing these shims."
+      ],
+      "related_seams": [
+        "spyre_model_runner_kv_spec",
+        "spyre_platform_wiring"
+      ],
+      "poc_links": [
+        "poc1",
+        "poc2"
+      ]
+    },
+    "spyre_model_runner_kv_spec": {
+      "layer": "kv_memory",
+      "question": "How does today Spyre model runner represent KV spec and cache-hit planning outside upstream block manager?",
+      "why_it_matters": "This seam shows where today path departs from upstream KV contracts and why next path must re-align.",
+      "reading_checklist": [
+        "Inspect get_kv_cache_spec behavior and any dummy spec values.",
+        "Inspect FullAttentionManager cache-hit logic usage.",
+        "Map these paths to missing connector/block-table interoperability."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Model runner expects KV spec aligned with block manager/cache manager.",
+        "vllm-spyre": "Dummy spec + local planning in current path.",
+        "vllm-spyre-next": "Must shift to native vLLM model definitions and KV spec behavior.",
+        "torch-spyre": "Runtime constraints may influence final implementation details, not contract shape."
+      },
+      "common_pitfalls": [
+        "Treating cache-hit planning logic as equivalent to upstream slot/block-table integration.",
+        "Assuming dummy KV spec is harmless for connector work."
+      ],
+      "related_seams": [
+        "attention_backend_contract",
+        "spyre_worker_kv_fakery",
+        "spyre_fms_loader_compile"
+      ],
+      "poc_links": [
+        "poc1",
+        "poc3"
+      ]
+    },
+    "spyre_fms_loader_compile": {
+      "layer": "compiler_runtime",
+      "question": "How does today Spyre stack couple FMS model loading, attention metadata wiring, and torch.compile backend choice?",
+      "why_it_matters": "This explains why removing FMS dependency and converging on upstream model code is a major next-step objective.",
+      "reading_checklist": [
+        "Inspect FMS model import/loading path.",
+        "Inspect torch.compile invocation and backend selection.",
+        "Inspect how past_key_value_states are managed and passed to model forward."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Native modeling path target for convergence.",
+        "vllm-spyre": "Current FMS-centric loader path and compile behavior.",
+        "vllm-spyre-next": "Target is upstream model code plus Spyre-specific backend seams.",
+        "torch-spyre": "Compiler/runtime hooks determine what compile path is practically usable."
+      },
+      "common_pitfalls": [
+        "Assuming compile backend swap alone removes FMS coupling.",
+        "Ignoring attention metadata path dependencies when changing model loader."
+      ],
+      "related_seams": [
+        "version_alignment",
+        "spyre_model_runner_kv_spec",
+        "torch_spyre_inductor_hooks"
+      ],
+      "poc_links": [
+        "poc1",
+        "poc3"
+      ]
+    },
+    "spyre_next_platform_scaffold": {
+      "layer": "platform",
+      "question": "What concrete platform scaffolding exists today in vllm-spyre-next and what remains placeholder?",
+      "why_it_matters": "This seam provides the realistic starting surface for correctness POCs without over-claiming maturity.",
+      "reading_checklist": [
+        "Inspect next platform class and check_and_update_config path.",
+        "Inspect example scripts that state current CPU-path baseline intent.",
+        "Identify explicit TODOs/placeholders for attention backend and runtime components."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Defines seams next platform should plug into.",
+        "vllm-spyre": "Today path remains the fallback baseline for functioning features.",
+        "vllm-spyre-next": "Scaffold available for incremental POC landing.",
+        "torch-spyre": "Device runtime maturity determines how quickly next path moves past CPU baseline."
+      },
+      "common_pitfalls": [
+        "Assuming scaffold equals full feature parity.",
+        "Delaying POCs waiting for complete implementation instead of using scaffold seams."
+      ],
+      "related_seams": [
+        "spyre_next_stubs",
+        "platform_resolution_interface"
+      ],
+      "poc_links": [
+        "poc1",
+        "poc2"
+      ]
+    },
+    "spyre_next_stubs": {
+      "layer": "platform",
+      "question": "Which worker/model-runner/scheduler pieces in vllm-spyre-next are still stubbed?",
+      "why_it_matters": "It defines exact implementation backlog and prevents ambiguity about what can be tested today.",
+      "reading_checklist": [
+        "Locate NotImplementedError stubs in worker/model-runner/scheduler files.",
+        "Map each stub to required upstream interface method coverage.",
+        "Prioritize stubs needed for POC1 and POC2 first."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Target contracts those stubs must satisfy.",
+        "vllm-spyre": "Provides behavior reference (even if architecturally divergent).",
+        "vllm-spyre-next": "Current implementation gap inventory.",
+        "torch-spyre": "Some stubs can be unblocked now on CPU path independent of hardware runtime maturity."
+      },
+      "common_pitfalls": [
+        "Treating all stubs as equal priority.",
+        "Starting performance optimization before stub-level correctness coverage exists."
+      ],
+      "related_seams": [
+        "spyre_next_platform_scaffold",
+        "attention_backend_contract",
+        "kv_connector_base_v1"
+      ],
+      "poc_links": [
+        "poc1",
+        "poc2",
+        "poc3"
+      ]
+    },
+    "torch_spyre_backend_registration": {
+      "layer": "compiler_runtime",
+      "question": "How is torch-spyre registered as a torch backend (PrivateUse1 and entrypoints)?",
+      "why_it_matters": "Backend registration defines whether compile/runtime codepaths can even target Spyre device types.",
+      "reading_checklist": [
+        "Inspect torch backend entrypoint declarations in pyproject.",
+        "Inspect PrivateUse1 renaming/init hooks in package init.",
+        "Cross-check README statements with concrete registration code."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Consumes backend indirectly via torch runtime and compile stack.",
+        "vllm-spyre": "Current compile path choices depend on backend availability.",
+        "vllm-spyre-next": "Will rely on this backend path for non-CPU deployment.",
+        "torch-spyre": "Direct source of backend registration and initialization."
+      },
+      "common_pitfalls": [
+        "Assuming backend registration implies full operator/runtime support.",
+        "Conflating import-time registration success with execution readiness."
+      ],
+      "related_seams": [
+        "torch_spyre_inductor_hooks",
+        "torch_spyre_runtime_gaps"
+      ],
+      "poc_links": [
+        "poc1"
+      ]
+    },
+    "torch_spyre_inductor_hooks": {
+      "layer": "compiler_runtime",
+      "question": "Where does torch-spyre hook into Inductor and AOTAutograd paths for compile-time integration?",
+      "why_it_matters": "These hooks are required for torch.compile-based model execution and influence graph partition/fallback behavior.",
+      "reading_checklist": [
+        "Inspect register_backend_for_device and related backend registration code.",
+        "Inspect AOTAutograd or compile_to_module monkey patches/overrides.",
+        "Inspect architecture docs explaining front-end/back-end split."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Compile stack expectations for backend-specific execution.",
+        "vllm-spyre": "Current compile backend selection in today path.",
+        "vllm-spyre-next": "Needed for next path to move beyond CPU baseline.",
+        "torch-spyre": "Concrete hook implementation and architecture assumptions."
+      },
+      "common_pitfalls": [
+        "Assuming hook presence means stable frontier usage across all target models.",
+        "Ignoring compile-cache/guard behavior while validating correctness."
+      ],
+      "related_seams": [
+        "torch_spyre_backend_registration",
+        "torch_spyre_runtime_gaps",
+        "spyre_fms_loader_compile"
+      ],
+      "poc_links": [
+        "poc1",
+        "poc3"
+      ]
+    },
+    "torch_spyre_runtime_gaps": {
+      "layer": "compiler_runtime",
+      "question": "What runtime gaps (fallbacks, copy semantics, stream/event behavior) remain in torch-spyre?",
+      "why_it_matters": "These gaps are the primary risk for production-grade disaggregation and efficient KV movement.",
+      "reading_checklist": [
+        "Inspect fallback registration and preload comments.",
+        "Inspect memory copy TODO/FIXME comments for host-device and device-device copy semantics.",
+        "Inspect stream/event hook TODOs to identify missing async primitives."
+      ],
+      "repo_lens": {
+        "upstream-vllm": "Assumes certain runtime primitives for high-throughput behavior.",
+        "vllm-spyre": "Current constraints often worked around by stack-specific policies.",
+        "vllm-spyre-next": "Risk register for what may block parity and optimization after correctness POCs.",
+        "torch-spyre": "Source of runtime limitations and likely remediation backlog."
+      },
+      "common_pitfalls": [
+        "Treating TODO/FIXME runtime notes as non-blocking for disaggregated serving.",
+        "Skipping explicit risk tracking for copy/stream/event maturity."
+      ],
+      "related_seams": [
+        "torch_spyre_inductor_hooks",
+        "kv_connector_base_v1",
+        "spyre_next_stubs"
+      ],
+      "poc_links": [
+        "poc2",
+        "poc3"
+      ]
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "repo_roots": {
+    "vllm": "../vllm",
+    "vllm-spyre": "../vllm-spyre",
+    "torch-spyre": ".."
+  },
+  "seam_spec": "./seams.json",
+  "seam_narratives": "./seam_narratives.json",
+  "story_spec": "./story.json",
+  "output_dir": "./data",
+  "web_data_dir": "./web/data",
+  "default_context": 50,
+  "grep_context": 4,
+  "allow_regex_targets": false,
+  "strict_target_matches": true,
+  "min_snippets": 30,
+  "pattern_tags": [
+    "slot_mapping",
+    "block_table_tensor",
+    "KVConnectorBase_V1",
+    "get_attn_backend_cls",
+    "check_and_update_config",
+    "get_kv_cache_shape",
+    "get_kv_cache_stride_order",
+    "DecodeBenchConnector",
+    "ChunkedPrefillSpyreScheduler",
+    "torch.compile",
+    "PrivateUse1",
+    "fallback",
+    "disaggregated_prefill"
+  ]
+}

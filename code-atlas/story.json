@@ -1,0 +1,320 @@
+{
+  "atlas_purpose": "Explain vLLM-to-Spyre integration seams from first principles down to exact source lines, while making commit/ref context explicit.",
+  "how_to_read": [
+    {
+      "title": "Start With Execution Model",
+      "details": "Read scheduler and attention metadata seams first so every later plugin/KV detail has concrete runtime context.",
+      "seams": [
+        "first_principles_prefill_decode",
+        "attention_backend_contract",
+        "block_table_slot_mapping"
+      ]
+    },
+    {
+      "title": "Map Extension Boundaries",
+      "details": "See how platform registration and platform interface hooks choose worker, model runner, attention backend, and connector components.",
+      "seams": [
+        "platform_plugin_registration",
+        "platform_resolution_interface",
+        "spyre_platform_wiring",
+        "spyre_next_platform_scaffold"
+      ]
+    },
+    {
+      "title": "Trace KV Lifecycle",
+      "details": "Follow KV allocation, slot mapping, scheduler connector hooks, and connector lifecycle methods end-to-end.",
+      "seams": [
+        "block_table_slot_mapping",
+        "scheduler_connector_hooks",
+        "kv_connector_base_v1",
+        "decode_bench_reference"
+      ]
+    },
+    {
+      "title": "Compare Hardware Paths",
+      "details": "Contrast CUDA paged-attention assumptions with Spyre constraints and torch-spyre runtime maturity constraints.",
+      "seams": [
+        "cuda_paged_attention_assumptions",
+        "torch_spyre_backend_registration",
+        "torch_spyre_inductor_hooks",
+        "torch_spyre_runtime_gaps"
+      ]
+    },
+    {
+      "title": "Translate To POCs",
+      "details": "Use seam evidence to build correctness-first attention backend and KV connector POCs before optimizing performance.",
+      "seams": [
+        "spyre_next_stubs",
+        "attention_backend_contract",
+        "kv_connector_base_v1",
+        "scheduler_connector_hooks"
+      ]
+    }
+  ],
+  "architecture_layers": [
+    {
+      "id": "runtime",
+      "title": "Runtime Scheduling Layer",
+      "summary": "Unified prefill/decode scheduling, token budgeting, and request progression semantics.",
+      "seams": [
+        "first_principles_prefill_decode",
+        "spyre_custom_scheduler"
+      ],
+      "what_to_verify": [
+        "No strict prefill/decode phase split in upstream scheduler semantics.",
+        "Spyre custom scheduler introduces hardware-specific policy and constraints."
+      ]
+    },
+    {
+      "id": "kv_memory",
+      "title": "Paged KV Memory Layer",
+      "summary": "Block allocation, block tables, slot mapping, and attention backend KV layout contract.",
+      "seams": [
+        "attention_backend_contract",
+        "block_table_slot_mapping",
+        "cuda_paged_attention_assumptions"
+      ],
+      "what_to_verify": [
+        "Attention backend shape/stride contract is explicit and testable.",
+        "slot_mapping and block tables drive physical KV reads/writes."
+      ]
+    },
+    {
+      "id": "disaggregation",
+      "title": "Disaggregation / Transfer Layer",
+      "summary": "Scheduler and worker connector hooks orchestrate KV load/save across prefill and decode boundaries.",
+      "seams": [
+        "scheduler_connector_hooks",
+        "kv_connector_base_v1",
+        "decode_bench_reference"
+      ],
+      "what_to_verify": [
+        "Connector lifecycle ordering is clear and instrumented.",
+        "Metadata contract includes enough info to map KV blocks correctly."
+      ]
+    },
+    {
+      "id": "platform",
+      "title": "Plugin / Platform Layer",
+      "summary": "Platform registration, platform interface seams, and generation split between vllm-spyre today and next.",
+      "seams": [
+        "platform_plugin_registration",
+        "platform_resolution_interface",
+        "spyre_platform_wiring",
+        "spyre_next_platform_scaffold",
+        "spyre_next_stubs"
+      ],
+      "what_to_verify": [
+        "Today stack overrides more internals than next stack targets.",
+        "Next stack should converge on upstream extension seams."
+      ]
+    },
+    {
+      "id": "compiler_runtime",
+      "title": "Compiler + Device Runtime Layer",
+      "summary": "torch.compile path, Inductor hooks, PrivateUse1 backend setup, and runtime fallbacks/limitations.",
+      "seams": [
+        "spyre_fms_loader_compile",
+        "torch_spyre_backend_registration",
+        "torch_spyre_inductor_hooks",
+        "torch_spyre_runtime_gaps"
+      ],
+      "what_to_verify": [
+        "Inductor integration points exist and are explicitly patched/registered.",
+        "Runtime limitations are identified before claiming production readiness."
+      ]
+    }
+  ],
+  "badge_legend": [
+    {
+      "label": "repo badge",
+      "meaning": "Which codebase the snippet came from (upstream vLLM, vllm-spyre today, vllm-spyre-next, torch-spyre)."
+    },
+    {
+      "label": "commit + ref badges",
+      "meaning": "Exact commit SHA used for snippet extraction and the local branch/ref for context."
+    },
+    {
+      "label": "Lx-Ly badge",
+      "meaning": "Precise line range shown in the snippet card and in permalink anchors."
+    },
+    {
+      "label": "sha-not-in-origin warning",
+      "meaning": "The local commit may not be in currently fetched origin refs; branch permalink is shown for convenience but SHA link stays primary."
+    }
+  ],
+  "global_caveats": [
+    "Seam extraction uses typed anchors (symbol/literal/contains_all/range); regex anchors are disabled unless explicitly enabled in config.",
+    "Inline snippets are extracted from git blobs at local HEAD commit, not the working tree.",
+    "Permalink (sha) always points to the pinned commit used for extraction.",
+    "Permalink (branch) can move as branch heads update and is for orientation only.",
+    "Cross-repo comparisons are meaningful only when version alignment seam confirms dependency band compatibility."
+  ],
+  "first_principles": [
+    {
+      "id": "prefill_decode",
+      "title": "Prefill vs decode",
+      "summary": "vLLM scheduling is token-progress based, not a hard phase split; this affects chunked prefill and connector semantics.",
+      "drill_seams": [
+        "first_principles_prefill_decode",
+        "scheduler_connector_hooks"
+      ]
+    },
+    {
+      "id": "kv_paging",
+      "title": "Paged KV + slot mapping",
+      "summary": "KV blocks are paged and addressed through block tables and slot mappings; backend correctness depends on these mappings.",
+      "drill_seams": [
+        "attention_backend_contract",
+        "block_table_slot_mapping",
+        "cuda_paged_attention_assumptions"
+      ]
+    },
+    {
+      "id": "connector_lifecycle",
+      "title": "KV connector lifecycle",
+      "summary": "Disaggregated serving relies on scheduler/worker connector hooks and strict metadata consistency.",
+      "drill_seams": [
+        "kv_connector_base_v1",
+        "decode_bench_reference",
+        "scheduler_connector_hooks"
+      ]
+    },
+    {
+      "id": "generation_split",
+      "title": "Spyre generation split",
+      "summary": "Today path uses custom scheduler/FMS-heavy integration; next path targets upstream seams with smaller custom surface.",
+      "drill_seams": [
+        "spyre_platform_wiring",
+        "spyre_custom_scheduler",
+        "spyre_next_platform_scaffold",
+        "spyre_next_stubs"
+      ]
+    }
+  ],
+  "poc_plan": [
+    {
+      "id": "poc1",
+      "title": "POC 1: correctness-first Spyre attention backend",
+      "steps": [
+        {
+          "text": "Implement gather->reference attention->scatter path that respects slot_mapping and block tables before optimizing kernels.",
+          "seams": [
+            "attention_backend_contract",
+            "block_table_slot_mapping",
+            "cuda_paged_attention_assumptions"
+          ]
+        },
+        {
+          "text": "Run prefill+decode comparisons against upstream CPU backend and validate logits/tolerances.",
+          "seams": [
+            "first_principles_prefill_decode",
+            "spyre_next_stubs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "poc2",
+      "title": "POC 2: minimal Spyre KV connector",
+      "steps": [
+        {
+          "text": "Implement in-memory KVConnectorBase_V1 with explicit metadata and lifecycle logging.",
+          "seams": [
+            "kv_connector_base_v1",
+            "decode_bench_reference",
+            "scheduler_connector_hooks"
+          ]
+        },
+        {
+          "text": "Exercise with disaggregated prefill harness and verify save/load ordering per layer.",
+          "seams": [
+            "first_principles_prefill_decode",
+            "scheduler_connector_hooks"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "poc3",
+      "title": "POC 3: layer-wise split execution",
+      "steps": [
+        {
+          "text": "Make prefill return host-visible KV outputs and decode consume them without inventing a separate scheduling model.",
+          "seams": [
+            "spyre_model_runner_kv_spec",
+            "spyre_next_stubs",
+            "torch_spyre_runtime_gaps"
+          ]
+        }
+      ]
+    }
+  ],
+  "glossary": [
+    {
+      "term": "Prefill",
+      "definition": "Initial prompt processing phase that computes many new tokens and writes the first KV cache entries.",
+      "seams": [
+        "first_principles_prefill_decode",
+        "block_table_slot_mapping"
+      ]
+    },
+    {
+      "term": "Decode",
+      "definition": "Iterative generation phase that appends new tokens while reusing cached KV for prior context.",
+      "seams": [
+        "first_principles_prefill_decode",
+        "attention_backend_contract"
+      ]
+    },
+    {
+      "term": "Paged KV cache",
+      "definition": "KV storage organized into fixed-size blocks to reduce fragmentation and support continuous batching.",
+      "seams": [
+        "block_table_slot_mapping",
+        "cuda_paged_attention_assumptions"
+      ]
+    },
+    {
+      "term": "slot_mapping",
+      "definition": "Mapping from token positions to physical KV slots/blocks used by attention backends and runners.",
+      "seams": [
+        "attention_backend_contract",
+        "block_table_slot_mapping"
+      ]
+    },
+    {
+      "term": "Block table",
+      "definition": "Per-request mapping of logical sequence blocks to physical cache blocks.",
+      "seams": [
+        "block_table_slot_mapping",
+        "cuda_paged_attention_assumptions"
+      ]
+    },
+    {
+      "term": "KVConnector v1",
+      "definition": "Connector API for scheduler/worker lifecycle methods to load/save KV across disaggregated boundaries.",
+      "seams": [
+        "kv_connector_base_v1",
+        "scheduler_connector_hooks",
+        "decode_bench_reference"
+      ]
+    },
+    {
+      "term": "Platform plugin",
+      "definition": "Entry-point based mechanism used by vLLM to select platform-specific worker/model-runner/attention integration.",
+      "seams": [
+        "platform_plugin_registration",
+        "platform_resolution_interface"
+      ]
+    },
+    {
+      "term": "PrivateUse1 backend",
+      "definition": "PyTorch device backend registration path used by torch-spyre before dedicated core device-type integration.",
+      "seams": [
+        "torch_spyre_backend_registration",
+        "torch_spyre_inductor_hooks"
+      ]
+    }
+  ]
+}

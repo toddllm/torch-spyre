@@ -1,0 +1,9 @@
+# Generated artifacts
+data/
+web/data/
+
+# Deployment runtime config
+deployment/cloudfront/site.env
+
+# macOS
+.DS_Store

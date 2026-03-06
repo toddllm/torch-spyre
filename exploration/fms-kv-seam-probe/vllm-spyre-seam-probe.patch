@@ -1,0 +1,159 @@
+diff --git a/vllm_spyre/envs.py b/vllm_spyre/envs.py
+index c4a4989..aeea4c1 100644
+--- a/vllm_spyre/envs.py
++++ b/vllm_spyre/envs.py
+@@ -20,6 +20,7 @@ if TYPE_CHECKING:
+     VLLM_SPYRE_NUM_CPUS: int = 0
+     VLLM_SPYRE_REQUIRE_KNOWN_CONFIG: bool = False
+     VLLM_SPYRE_MODEL_CONFIG_FILE: str | None = None
++    VLLM_SPYRE_ENABLE_FMS_LAYER_PROBE: bool = False
+ 
+ logger = init_logger(__name__)
+ 
+@@ -132,6 +133,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     # Path to custom model_configs.yaml file. If not set, uses the default
+     # location at vllm_spyre/config/model_configs.yaml
+     "VLLM_SPYRE_MODEL_CONFIG_FILE": lambda: os.getenv("VLLM_SPYRE_MODEL_CONFIG_FILE"),
++    # If set, enable an experimental seam probe that stamps FMS attention
++    # layers with per-layer identity and passes fixed-shape probe tensors
++    # through the attention kwargs path. This is research-only and should
++    # not be used as scheduler-visible policy input.
++    "VLLM_SPYRE_ENABLE_FMS_LAYER_PROBE": lambda: bool(
++        int(os.getenv("VLLM_SPYRE_ENABLE_FMS_LAYER_PROBE", "0"))
++    ),
+ }
+ # --8<-- [end:env-vars-definition]
+ 
+diff --git a/vllm_spyre/model_executor/model_loader/spyre.py b/vllm_spyre/model_executor/model_loader/spyre.py
+index 2e4a52a..3a5f5a1 100644
+--- a/vllm_spyre/model_executor/model_loader/spyre.py
++++ b/vllm_spyre/model_executor/model_loader/spyre.py
+@@ -2,6 +2,7 @@
+ 
+ import os
+ from dataclasses import dataclass
++import re
+ from typing import cast
+ 
+ from fms_mo.aiu_addons.fp8.fp8_utils import ScaledTensor
+@@ -10,6 +11,7 @@ import torch._inductor.config
+ import torch.distributed as dist
+ import torch.nn as nn
+ from fms.models import get_model
++from fms.modules.attention import MultiHeadAttention
+ from transformers import PretrainedConfig, Mistral3Config
+ from vllm.config import ModelConfig, VllmConfig
+ from vllm.forward_context import get_forward_context
+@@ -44,6 +46,13 @@ class SpyreAttentionMetadata:
+     is_prefill: bool
+ 
+ 
++@dataclass
++class SpyreAttentionProbeState:
++    ready: torch.Tensor
++    coverage: torch.Tensor
++    phase: torch.Tensor
++
++
+ class SpyreCausalLM(nn.Module):
+     def __init__(
+         self,
+@@ -140,6 +149,8 @@ class SpyreCausalLM(nn.Module):
+         self.past_key_value_states: list[
+             tuple[torch.Tensor | ScaledTensor, torch.Tensor | ScaledTensor]
+         ] = []
++        self.enable_fms_layer_probe = envs_spyre.VLLM_SPYRE_ENABLE_FMS_LAYER_PROBE
++        self._attention_probe_state: SpyreAttentionProbeState | None = None
+ 
+     def load_weights(
+         self,
+@@ -197,6 +208,9 @@ class SpyreCausalLM(nn.Module):
+                 **model_kwargs,
+             )
+ 
++        if self.enable_fms_layer_probe:
++            self._stamp_attention_layers()
++
+         self.fms_model.eval()
+         torch.set_grad_enabled(False)
+ 
+@@ -270,6 +284,54 @@ class SpyreCausalLM(nn.Module):
+         self.is_multimodal = self.mm_model_utils is not None
+         logger.debug("Model weights loaded successfully.")
+ 
++    def _stamp_attention_layers(self) -> None:
++        """Stamp FMS attention modules with stable layer-local metadata."""
++        layer_pattern = re.compile(r"(?:^|[.])layers\.(\d+)\.attn$")
++        stamped = 0
++        for name, module in self.fms_model.named_modules():
++            if not isinstance(module, MultiHeadAttention):
++                continue
++            match = layer_pattern.search(name)
++            if match is None:
++                continue
++            module.layer_idx = int(match.group(1))
++            module.layer_name = name
++            stamped += 1
++
++        logger.info("Stamped %d FMS attention layers for seam probe.", stamped)
++
++    def _allocate_attention_probe_state(self, device: torch.device) -> SpyreAttentionProbeState:
++        return SpyreAttentionProbeState(
++            ready=torch.zeros(self.kv_cache_specs["num_layers"], dtype=torch.int64, device=device),
++            coverage=torch.zeros(
++                self.kv_cache_specs["num_layers"], dtype=torch.int64, device=device
++            ),
++            phase=torch.full(
++                (self.kv_cache_specs["num_layers"],), -1, dtype=torch.int64, device=device
++            ),
++        )
++
++    def _prepare_attention_probe_state(self, device: torch.device) -> SpyreAttentionProbeState:
++        state = self._attention_probe_state
++        if state is None or state.ready.device != device:
++            state = self._allocate_attention_probe_state(device)
++            self._attention_probe_state = state
++        else:
++            state.ready.zero_()
++            state.coverage.zero_()
++            state.phase.fill_(-1)
++        return state
++
++    def get_attention_probe_snapshot(self) -> SpyreAttentionProbeState | None:
++        state = self._attention_probe_state
++        if state is None:
++            return None
++        return SpyreAttentionProbeState(
++            ready=state.ready.detach().clone().cpu(),
++            coverage=state.coverage.detach().clone().cpu(),
++            phase=state.phase.detach().clone().cpu(),
++        )
++
+     def _cast_bf16_to_f16(self):
+         """Cast all bf16 params in the model to f16."""
+         for name, param in self.fms_model.named_parameters():
+@@ -418,6 +480,12 @@ class SpyreCausalLM(nn.Module):
+                 input_ids=input_ids_or_embeds, position_ids=positions, attn_metadata=attn_metadata
+             )
+ 
++        attention_probe_state = None
++        if self.enable_fms_layer_probe:
++            attention_probe_state = self._prepare_attention_probe_state(
++                input_ids_or_embeds.device
++            )
++
+         # Run the model
+         output = self.fms_model(
+             input_ids_or_embeds,
+@@ -431,6 +499,11 @@ class SpyreCausalLM(nn.Module):
+             block_table=attn_metadata.block_table,
+             slot_mapping=attn_metadata.slot_mapping,
+             attn_name=self.attention_name,
++            kv_probe_ready=None if attention_probe_state is None else attention_probe_state.ready,
++            kv_probe_coverage=(
++                None if attention_probe_state is None else attention_probe_state.coverage
++            ),
++            kv_probe_phase=None if attention_probe_state is None else attention_probe_state.phase,
+         )
+ 
+         logits, self.past_key_value_states = output

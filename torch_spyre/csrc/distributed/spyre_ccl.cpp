@@ -538,20 +538,38 @@ c10::intrusive_ptr<Work> SpyreCCLBackend::barrier(const BarrierOptions& opts) {
 
 c10::intrusive_ptr<Work> SpyreCCLBackend::broadcast(
     std::vector<at::Tensor>& tensors, const BroadcastOptions& opts) {
-  if (opts.asyncOp) {
-    throw SpyreCCLNotSupportedException(getBackendName(),
-                                        "asyncOp in broadcast");
-  }
   check_vector_tensor(tensors, 1, 1);
   c10::intrusive_ptr<SpyreCCLWork> work =
       c10::make_intrusive<SpyreCCLWork>(OpType::BROADCAST);
 
-  spyre_comms::Tensor tensor;
-  prepare_tensor(tensors[0], &tensor);
+  // Keep the at::Tensor and its spyre_comms::Tensor descriptor alive on the
+  // SpyreCCLWork so they outlive this function for the async case.
+  work->at_tensor_ = tensors[0];
+  prepare_tensor(work->at_tensor_, &work->tensor_);
 
-  work->work_schedule_ = group_context_->broadcast(tensor, opts.rootRank);
+  // ====== SPLIT-API PATH (probe, no cache) ========================
+  bool _used_split = false;
+  try {
+    spyre_comms::TensorInfo _ti = getTensorInfo(tensors[0]);
+    std::unique_ptr<spyre_comms::WorkScheduleInfo> _info =
+        group_context_->broadcast(_ti, opts.rootRank);
+    work->work_schedule_ =
+        group_context_->broadcast_applyTensor(*_info, work->tensor_);
+    _used_split = true;
+  } catch (...) {
+    _used_split = false;
+  }
+  if (!_used_split) {
+    work->work_schedule_ = group_context_->broadcast(work->tensor_, opts.rootRank);
+  }
+  // =================================================================
   work->work_schedule_->start();
-  work->work_schedule_->wait();
+  // Async path: defer wait() to SpyreCCLWork::wait() (driven by the user
+  // via dist.broadcast(...).wait()).  Sync path (asyncOp=false) keeps the
+  // historical behavior of waiting before returning.
+  if (!opts.asyncOp) {
+    work->work_schedule_->wait();
+  }
 
   return work;
 }
@@ -700,6 +718,9 @@ SpyreCCLWork::SpyreCCLWork(OpType opType)
           c10::ListType::create(c10::TensorType::get()))) {}
 
 bool SpyreCCLWork::isCompleted() {
+  if (work_schedule_) {
+    return work_schedule_->query();
+  }
   return true;
 }
 
@@ -707,7 +728,10 @@ bool SpyreCCLWork::isSuccess() const {
   return true;
 }
 
-bool SpyreCCLWork::wait(std::chrono::milliseconds timeout) {
+bool SpyreCCLWork::wait(std::chrono::milliseconds /*timeout*/) {
+  if (work_schedule_) {
+    work_schedule_->wait();
+  }
   return true;
 }
 

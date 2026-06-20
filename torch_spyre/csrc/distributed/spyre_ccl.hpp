@@ -18,6 +18,9 @@
 #include <pybind11/chrono.h>
 #include <torch/python.h>
 
+#include <mutex>
+#include <unordered_map>
+#include <memory>
 #include <spyre_comms.hpp>
 #include <torch/csrc/distributed/c10d/Backend.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp>
@@ -188,6 +191,30 @@ class SpyreCCLBackend : public c10d::Backend {
   void check_single_tensor(const at::Tensor& tensor);
   void check_vector_tensor(const std::vector<at::Tensor>& tensors,
                            int min_allowed = 1, int max_allowed = 1);
+
+ private:
+  // ====== split-API broadcast cache (probe) ========================
+  struct SplitCacheKey {
+    int64_t numel;
+    int scalar_type;
+    int root_rank;
+    bool operator==(const SplitCacheKey& o) const noexcept {
+      return numel == o.numel && scalar_type == o.scalar_type &&
+             root_rank == o.root_rank;
+    }
+  };
+  struct SplitCacheKeyHash {
+    size_t operator()(const SplitCacheKey& k) const noexcept {
+      return std::hash<int64_t>{}(k.numel) ^
+             (std::hash<int>{}(k.scalar_type) << 1) ^
+             (std::hash<int>{}(k.root_rank) << 2);
+    }
+  };
+  std::unordered_map<SplitCacheKey,
+                     std::shared_ptr<spyre_comms::WorkScheduleInfo>,
+                     SplitCacheKeyHash> broadcast_info_cache_;
+  std::mutex split_cache_mu_;
+  // ================================================================
 };
 
 /***********************************************
@@ -208,6 +235,12 @@ class SpyreCCLWork : public Work {
  private:
   c10::intrusive_ptr<c10::ivalue::Future> future_;
   std::shared_ptr<spyre_comms::WorkSchedule> work_schedule_;
+  // Keep tensor descriptor alive across the schedule's lifetime so that the
+  // schedule can read tensor metadata if wait() is deferred (async path).
+  spyre_comms::Tensor tensor_;
+  // Keep the input at::Tensor alive too so the underlying storage referenced
+  // by spyre_comms::Tensor remains valid until wait() completes.
+  at::Tensor at_tensor_;
 };
 
 }  // namespace c10d

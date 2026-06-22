@@ -538,10 +538,6 @@ c10::intrusive_ptr<Work> SpyreCCLBackend::barrier(const BarrierOptions& opts) {
 
 c10::intrusive_ptr<Work> SpyreCCLBackend::broadcast(
     std::vector<at::Tensor>& tensors, const BroadcastOptions& opts) {
-  if (opts.asyncOp) {
-    throw SpyreCCLNotSupportedException(getBackendName(),
-                                        "asyncOp in broadcast");
-  }
   check_vector_tensor(tensors, 1, 1);
   c10::intrusive_ptr<SpyreCCLWork> work =
       c10::make_intrusive<SpyreCCLWork>(OpType::BROADCAST);
@@ -551,7 +547,14 @@ c10::intrusive_ptr<Work> SpyreCCLBackend::broadcast(
 
   work->work_schedule_ = group_context_->broadcast(tensor, opts.rootRank);
   work->work_schedule_->start();
-  work->work_schedule_->wait();
+  // For async_op=True, return the Work to the caller without waiting.
+  // SpyreCCLWork::wait() drives work_schedule_->wait() so the schedule
+  // completes when the caller calls work.wait(). For async_op=False,
+  // call wait() inline so the existing synchronous semantics are
+  // preserved.
+  if (!opts.asyncOp) {
+    work->work_schedule_->wait();
+  }
 
   return work;
 }
@@ -700,6 +703,14 @@ SpyreCCLWork::SpyreCCLWork(OpType opType)
           c10::ListType::create(c10::TensorType::get()))) {}
 
 bool SpyreCCLWork::isCompleted() {
+  // Non-blocking poll. If we hold a work_schedule_ (any path that went
+  // through SpyreCCLBackend::broadcast and similar), ask the schedule.
+  // Operations that did not take that path leave work_schedule_ null
+  // and we report completed (their work was already done inline before
+  // returning the SpyreCCLWork).
+  if (work_schedule_) {
+    return work_schedule_->query();
+  }
   return true;
 }
 
@@ -708,6 +719,14 @@ bool SpyreCCLWork::isSuccess() const {
 }
 
 bool SpyreCCLWork::wait(std::chrono::milliseconds timeout) {
+  // Drive the underlying schedule to completion when present. The
+  // timeout argument is currently ignored — spyre_comms::WorkSchedule
+  // does not yet expose a timed wait. Returning true mirrors the
+  // upstream c10d Work::wait() contract for "completed".
+  (void)timeout;
+  if (work_schedule_) {
+    work_schedule_->wait();
+  }
   return true;
 }
 

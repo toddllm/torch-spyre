@@ -203,18 +203,22 @@ def dedup_and_promote_constants(graph: GraphLowering) -> None:
         key = _constant_key(op)
         groups.setdefault(key, []).append(op)
 
-    # Determine the set of duplicate names up front. When there are no
-    # duplicates, skip the reverse-index scan and go straight to
-    # front-loading; the pristine pass never called get_read_writes in
-    # that case either, and it is worth preserving.
-    #
-    # Filter out duplicates whose name is a graph output: the pristine
-    # _redirect_consumers skips the redirect for such duplicates (see
-    # the guard there), so indexing consumers for them would widen the
-    # reverse index for work the pass never performs. Skipping them at
-    # index-construction time is behavior-preserving. _drop_constant
-    # continues to run on the surviving output-name duplicates in Step
-    # 2 exactly as before.
+    # Whether Step 2 runs depends only on "does any duplicate exist?".
+    # It must NOT be gated by ``duplicate_names`` (below): output-name
+    # duplicates are excluded from the index-construction scope but
+    # ``_drop_constant`` still has to run on them, matching pristine
+    # behavior. See regression case
+    # tests/inductor/test_dedup_constants.py::
+    # TestDedupConstantsPassLevel::test_all_output_name_duplicates_still_dropped.
+    has_duplicates = any(len(group) > 1 for group in groups.values())
+
+    # Which duplicate names need consumer indexing. Filters out
+    # duplicates whose name is a graph output: pristine
+    # ``_redirect_consumers`` skips the redirect for such duplicates
+    # (see the guard there), so indexing consumers for them would
+    # widen the reverse index for work the pass never performs.
+    # Skipping them at index-construction time is behavior-preserving
+    # for the index scope.
     output_names = V.graph.get_output_names()
     duplicate_names: set[str] = set()
     for group in groups.values():
@@ -225,14 +229,33 @@ def dedup_and_promote_constants(graph: GraphLowering) -> None:
                     continue
                 duplicate_names.add(name)
 
-    # --- Step 2: dedup, only when duplicates exist ---
-    if duplicate_names:
-        consumers_by_name = _build_reverse_consumer_index(operations, duplicate_names)
+    # --- Step 2: dedup, whenever any duplicate group exists ---
+    if has_duplicates:
+        # Only build the reverse index when there is a non-output
+        # duplicate to redirect for. When every duplicate is a graph
+        # output, ``duplicate_names`` is empty and the index build
+        # (which would incur one ``get_read_writes`` call per op) is
+        # skipped -- but Step 2 still iterates so ``_drop_constant``
+        # runs for those output-name duplicates.
+        consumers_by_name: dict[str, list[Operation]] = (
+            _build_reverse_consumer_index(operations, duplicate_names)
+            if duplicate_names
+            else {}
+        )
         for key, group in groups.items():
             if len(group) <= 1:
                 continue
             canonical = group[0]
             for dup in group[1:]:
+                # ``consumers`` is ``[]`` for output-name duplicates
+                # (whose name was filtered out of the index scope) and
+                # for non-output duplicates that have no live readers.
+                # ``_redirect_consumers`` handles both cases: for
+                # output-name duplicates its explicit output-name
+                # guard returns before touching the empty list; for
+                # zero-consumer non-output duplicates the loop body
+                # simply doesn't execute. Neither case affects
+                # ``_drop_constant`` below.
                 _redirect_consumers(
                     consumers_by_name.get(dup.get_name(), []),
                     dup,

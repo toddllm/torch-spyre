@@ -1059,6 +1059,166 @@ class TestDedupConstantsPassLevel(_DedupTestBase):
 
         self._drive(cb, fn, (x, w1, w2, w3))
 
+    # ------------------------------------------------------------------
+    # test_all_output_name_duplicates_still_dropped
+    # ------------------------------------------------------------------
+
+    def test_all_output_name_duplicates_still_dropped(self) -> None:
+        """When every duplicate is a graph output, Step 2 must still
+        execute ``_drop_constant`` on those duplicates. Only the
+        consumer-index scope is filtered by output names; the "does
+        Step 2 run at all" gate is separate.
+
+        This is the regression case Will identified in his second
+        review: the output-name filter was correctly applied to
+        ``duplicate_names`` (the reverse-index scope) but the same set
+        was also used to gate whether Step 2 ran. When every duplicate
+        was a graph output the set was empty, Step 2 was skipped
+        entirely, and pristine's ``_drop_constant`` never ran --
+        contradicting the pristine semantics where
+        ``_redirect_consumers`` skipped the redirect for output-name
+        duplicates but ``_drop_constant`` still cleaned them up.
+
+        Construction: after ``insert_bmm_padding`` produces at least
+        two padding constants in one dedup group, monkey-patch
+        ``graph.get_output_names`` to return the set of duplicate
+        buffer names in that group. That marks every duplicate as
+        "output-name" for the pass, so the reverse-index scope
+        collapses to the empty set. Assertions:
+
+          - dedup_and_promote_constants makes ZERO
+            ComputedBuffer.get_read_writes calls (the index scan is
+            skipped because the scope is empty and there are no
+            other non-output duplicates)
+          - every duplicate op is removed from graph.operations
+          - every duplicate buffer name is in removed_buffers
+          - every duplicate buffer name is absent from name_to_buffer
+          - every duplicate operation name is absent from name_to_op
+          - canonical survives
+
+        This test specifically fails on any implementation that gates
+        Step 2 on the same output-filtered set used for index scope.
+        """
+        dtype = torch.float16
+        stick_size = get_elem_in_stick(dtype)
+        k = stick_size + 1
+        x = torch.randn(2, 8, k, dtype=dtype, device="spyre")
+        w1 = torch.randn(2, k, 32, dtype=dtype, device="spyre")
+        w2 = torch.randn(2, k, 32, dtype=dtype, device="spyre")
+
+        counter = {"n": 0}
+        orig_grw = ComputedBuffer.get_read_writes
+
+        def counted_grw(self):
+            counter["n"] += 1
+            return orig_grw(self)
+
+        def cb(graph: GraphLowering) -> None:
+            from torch_spyre._inductor.dedup_constants import _constant_key
+
+            constants = self._constants(graph.operations)
+            self.assertGreaterEqual(
+                len(constants),
+                2,
+                "PRECONDITION: no duplicate group produced. Not a dedup failure.",
+            )
+            groups: dict[tuple, list[SpyreConstantFallback]] = {}
+            for c in constants:
+                groups.setdefault(_constant_key(c), []).append(c)
+            multi = [g for g in groups.values() if len(g) > 1]
+            self.assertTrue(
+                multi,
+                "PRECONDITION: no multi-constant group. Not a dedup failure.",
+            )
+            group = multi[0]
+            canonical = group[0]
+            dups = group[1:]
+            dup_names = [d.get_name() for d in dups]
+            dup_op_names = [d.get_operation_name() for d in dups]
+
+            # Snapshot pre-dedup state that the assertions consume.
+            self.assertIn(canonical, graph.operations)
+            for d in dups:
+                self.assertIn(d, graph.operations)
+
+            # Mark every duplicate name in the group as a graph output.
+            # This collapses the reverse-index scope to empty while
+            # preserving has_duplicates=True, which is exactly the
+            # condition that triggered the regression.
+            orig_get_output_names = graph.get_output_names
+            output_set = set(dup_names)
+
+            def patched_get_output_names(_o=orig_get_output_names, _s=output_set):
+                return _s | set(_o())
+
+            # patch on the instance for the duration of the pass.
+            object.__setattr__(graph, "get_output_names", patched_get_output_names)
+
+            try:
+                with patch.object(ComputedBuffer, "get_read_writes", counted_grw):
+                    counter["n"] = 0
+                    dedup_and_promote_constants(graph)
+                    calls = counter["n"]
+            finally:
+                # Restore -- best-effort; the test raises _TestStopSignal
+                # right after this so the graph will not be used.
+                try:
+                    del graph.get_output_names  # type: ignore[misc]
+                except Exception:
+                    pass
+
+            # Reverse-index scope is empty (all dup names filtered out),
+            # so no candidate ops are scanned via get_read_writes.
+            self.assertEqual(
+                calls,
+                0,
+                f"regression guard: when every duplicate name is a graph "
+                f"output the reverse-index scope should be empty and no "
+                f"ComputedBuffer.get_read_writes calls should be made from "
+                f"the index build; got {calls} calls.",
+            )
+
+            # ``_drop_constant`` must still have run on every duplicate.
+            # This is exactly the assertion the v2 regression violated.
+            for d, dname, opname in zip(dups, dup_names, dup_op_names):
+                self.assertNotIn(
+                    d,
+                    graph.operations,
+                    f"regression guard: duplicate op for buffer {dname} "
+                    "should be removed from graph.operations even when it "
+                    "is a graph output (_drop_constant must still run).",
+                )
+                self.assertIn(
+                    dname,
+                    graph.removed_buffers,
+                    f"regression guard: duplicate buffer name {dname} "
+                    "should be in removed_buffers even when it is a graph "
+                    "output.",
+                )
+                self.assertNotIn(
+                    dname,
+                    graph.name_to_buffer,
+                    f"regression guard: duplicate buffer name {dname} "
+                    "should be absent from name_to_buffer.",
+                )
+                self.assertNotIn(
+                    opname,
+                    graph.name_to_op,
+                    f"regression guard: duplicate op name {opname} should "
+                    "be absent from name_to_op.",
+                )
+            self.assertIn(
+                canonical,
+                graph.operations,
+                "canonical should survive dedup on the all-outputs path",
+            )
+            raise _TestStopSignal()
+
+        def fn(x, w1, w2):
+            return torch.bmm(x, w1) + torch.bmm(x, w2)
+
+        self._drive(cb, fn, (x, w1, w2))
+
 
 # ===========================================================================
 # TestBuildReverseConsumerIndex -- standalone unit tests over

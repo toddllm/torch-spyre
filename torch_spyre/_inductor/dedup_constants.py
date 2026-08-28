@@ -65,8 +65,11 @@ def _build_reverse_consumer_index(
     ``.name``, that op still appears at most once in
     ``consumers_by_name[name]``. This exactly preserves the pristine
     algorithm's behavior, which patches an op at most once per duplicate.
+
+    Returns a plain ``dict`` so a lookup of an absent key does not
+    silently insert an empty list into the mapping.
     """
-    idx: dict[str, list[Operation]] = defaultdict(list)
+    idx: defaultdict[str, list[Operation]] = defaultdict(list)
     for op in operations:
         matched_names: set[str] = set()
         for dep in op.get_read_writes().reads:
@@ -74,7 +77,7 @@ def _build_reverse_consumer_index(
                 matched_names.add(dep.name)
         for name in matched_names:
             idx[name].append(op)
-    return idx
+    return dict(idx)
 
 
 def _redirect_consumers(
@@ -84,8 +87,26 @@ def _redirect_consumers(
 ) -> None:
     """Rewrite every ComputedBuffer consumer of dup to read canonical instead.
 
-    ``consumers`` is ``consumers_by_name[dup.get_name()]`` -- precomputed by
-    ``_build_reverse_consumer_index``, so this function does not call
+    Freshness precondition: ``consumers`` must be the list computed by
+    ``_build_reverse_consumer_index`` from a single sweep of
+    ``graph.operations`` taken immediately before this pass's redirect
+    loop begins. The pass mutates consumer ``inner_fn``s as it walks
+    each duplicate's entry (via ``_patch_inner_fn``), so calling
+    ``op.get_read_writes()`` on any patched consumer after the fact
+    would observe the *rewritten* reads and no longer identify the
+    duplicate names. The precomputed lists represent the reads that
+    were live before any rewrite; consuming each duplicate's list once,
+    in group iteration order, is safe because processing dup1 -> C1
+    only wraps the consumer's ``inner_fn`` in an additional
+    ``NameSwapHandler({D1: C1})`` layer -- it does not affect any
+    other buffer name a later dup2 -> C2 would translate. If a single
+    consumer reads two duplicates D1 and D2, the pass will patch it
+    twice; the two ``NameSwapHandler`` layers compose (each translates
+    only its own key) so both redirects fire at codegen time. This
+    matches the semantics of the pristine live-rescan implementation.
+
+    ``consumers`` is ``consumers_by_name[dup.get_name()]`` -- precomputed
+    from the reverse index, so this function does not call
     ``get_read_writes`` and does not scan ``graph.operations``. All other
     semantics (output-name skip, dup/canonical identity skip,
     non-ComputedBuffer AssertionError) are unchanged.
@@ -95,6 +116,13 @@ def _redirect_consumers(
     name_map = {D: C}
 
     # Do not dedup a constant that is itself a graph output.
+    #
+    # This guard is redundant when reached via ``dedup_and_promote_constants``
+    # -- that entry point pre-filters graph-output duplicates out of
+    # ``duplicate_names`` before building the reverse index, so the
+    # consumer list arriving here is always empty for an output-name
+    # duplicate. The guard is retained here for direct callers and to
+    # keep the pristine behavior obvious at the redirect site.
     if D in V.graph.get_output_names():
         logger.debug("dedup_and_promote_constants: skipping output constant %s", D)
         return
@@ -179,11 +207,23 @@ def dedup_and_promote_constants(graph: GraphLowering) -> None:
     # duplicates, skip the reverse-index scan and go straight to
     # front-loading; the pristine pass never called get_read_writes in
     # that case either, and it is worth preserving.
+    #
+    # Filter out duplicates whose name is a graph output: the pristine
+    # _redirect_consumers skips the redirect for such duplicates (see
+    # the guard there), so indexing consumers for them would widen the
+    # reverse index for work the pass never performs. Skipping them at
+    # index-construction time is behavior-preserving. _drop_constant
+    # continues to run on the surviving output-name duplicates in Step
+    # 2 exactly as before.
+    output_names = V.graph.get_output_names()
     duplicate_names: set[str] = set()
     for group in groups.values():
         if len(group) > 1:
             for dup in group[1:]:
-                duplicate_names.add(dup.get_name())
+                name = dup.get_name()
+                if name in output_names:
+                    continue
+                duplicate_names.add(name)
 
     # --- Step 2: dedup, only when duplicates exist ---
     if duplicate_names:

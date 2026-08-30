@@ -219,6 +219,78 @@ class TestCertifiedGreedySeed(unittest.TestCase):
             _obj_units(cpsat_only, ALIGNMENT),
         )
 
+    # -- 5b. zero-cost non-excluded buffer may remain spilled --
+    def test_zero_cost_non_excluded_buffer_may_remain_spilled(self):
+        """The certificate bounds the *objective*, not the placement set.
+        A non-excluded buffer whose ``spill_cost == 0`` can legally be
+        left spilled on a certified plan: it neither raises the sum
+        above the forced-spill floor nor lowers it. Regression test
+        against the incorrect claim "reaching the floor is equivalent
+        to placing every non-excluded buffer" -- a claim that assumes
+        strictly positive spill costs.
+
+        Fixture. ``hot`` has ``spill_cost = 40`` (a nonzero-cost
+        intermediate with two reads) and lives across [0, 5). ``zero``
+        is a single-use graph input (``read_count=1``,
+        ``first_use_is_read=True`` => ``spill_cost = 0``) that arrives
+        at t=1 while ``hot`` still occupies the entire capacity.
+        Greedy places ``hot`` first and cannot fit ``zero``, so
+        ``zero`` remains spilled. ``zero`` is not in
+        ``record_exclusions()`` (its ``residency_reason`` is unset and
+        ``min_footprint == size <= limit``), yet the plan is still
+        certifiable: the residency objective evaluates to 0 -- the
+        forced-spill floor for this input.
+        """
+        from torch_spyre._inductor.scratchpad.ilp_solver_ortools import (
+            CpSatLayoutSolver,
+        )
+
+        capacity = 10
+        buffers = [
+            _mk("hot", 10, [0, 2, 4]),
+            _mk("zero", 10, [1], first_use_is_read=True),
+        ]
+
+        # Verify the fixture predicts what we're asserting: zero has
+        # spill_cost == 0, hot has spill_cost > 0.
+        from torch_spyre._inductor.scratchpad.ilp_solver_ortools import (
+            _hbm_spill_cost,
+        )
+
+        self.assertEqual(_hbm_spill_cost(buffers[1]), 0)
+        self.assertGreater(_hbm_spill_cost(buffers[0]), 0)
+
+        # Hybrid certifies and returns hot placed, zero spilled.
+        result = _hybrid(buffers, capacity, ALIGNMENT)
+        placed = _placed(result)
+        self.assertEqual(placed, {"hot"})
+        # Certificate was valid: objective matches standalone CP-SAT.
+        cpsat_only = _cpsat_only(buffers, capacity, ALIGNMENT)
+        self.assertEqual(
+            _obj_units(result, ALIGNMENT),
+            _obj_units(cpsat_only, ALIGNMENT),
+        )
+        # zero was spilled but was NOT in the forced-spill set: it had
+        # no ``residency_reason`` and its ``min_footprint <= limit``.
+        # The seed still committed a plan with zero as address=None, so
+        # ``spill_reasons`` must fall back to the solver-chose-spill
+        # sentinel for zero.
+        solver = CpSatLayoutSolver(
+            copy.deepcopy(buffers),
+            capacity,
+            ALIGNMENT,
+        )
+        solver.plan_layout()
+        self.assertIn("zero", solver.spill_reasons)
+        forced = dict(
+            CpSatLayoutSolver(
+                copy.deepcopy(buffers),
+                capacity,
+                ALIGNMENT,
+            ).record_exclusions()
+        )
+        self.assertNotIn("zero", forced)
+
     # -- 6. graph-input spill-cost semantics --
     def test_graph_input_spill_cost_semantics(self):
         """A multi-use graph input's spill_cost is

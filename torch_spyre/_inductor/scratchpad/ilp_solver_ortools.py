@@ -731,7 +731,13 @@ class CpSatLayoutSolver(CoreDivisionLayoutSolver):
         over exactly the buffers CP-SAT is forced to keep non-resident:
         the set :meth:`record_exclusions` returns, which
         ``_add_core_division`` pins to ``in_buffer = 0``. Reaching that
-        floor is equivalent to placing every non-excluded buffer.
+        floor proves global optimality of the placement-only residency
+        objective: no feasible CP-SAT solution can have a strictly
+        lower objective value than the forced-spill sum. Any
+        additionally spilled non-excluded buffers on such a plan must
+        have ``spill_cost == 0`` (else they would raise the sum above
+        the floor), and zero-cost terms neither help nor hurt the
+        objective.
 
         The certificate compares CP-SAT-domain quantities. Buffer sizes
         are wrapped with ``ceil_div(size, alignment)`` -- exactly what
@@ -845,10 +851,10 @@ class CpSatLayoutSolver(CoreDivisionLayoutSolver):
             b.address = greedy_by_name[b.name].address
         # ``spill_reasons`` matches the CP-SAT tail: pre-solve forced
         # reason when we have one, else the solver-chose-spill sentinel.
-        # Every spilled buffer here is in ``forced_reasons`` by the
-        # certificate (greedy placed every non-excluded buffer, so no
-        # buffer outside ``forced_reasons`` is spilled), but keep the
-        # fallback for symmetry with the CP-SAT tail.
+        # The certificate only bounds the *objective*, not the placement
+        # set: a non-excluded buffer with ``spill_cost == 0`` may
+        # remain spilled without lifting the sum above the floor, so
+        # the sentinel branch is a real code path, not just symmetry.
         self.spill_reasons = {
             b.name: forced_reasons.get(b.name, _SOLVER_CHOSE_SPILL)
             for b in buffers

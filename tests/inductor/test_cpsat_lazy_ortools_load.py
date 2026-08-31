@@ -34,8 +34,9 @@ Guarantees:
 - Joint ``plan_layout_and_core_divisions`` lazily imports it, on both
   the default residency-lex-solve path and the #3810 ``cost_expr``
   branch.
-- Repeated CP-SAT solves reuse the already-loaded module (patch-based
-  proof that ``_load_ortools`` does at most one real import).
+- Repeated CP-SAT solves reuse the already-loaded module; the real
+  import (``_do_ortools_import``) runs exactly once across both
+  serial repeat calls and concurrent contention.
 - Availability check is robust to ``ModuleNotFoundError`` /
   ``ImportError`` / ``ValueError`` from ``find_spec``.
 - The first-load critical section is protected by a lock.
@@ -336,35 +337,40 @@ print(json.dumps(result))
         self.assertEqual(r["n_spilled"], 0, r)
 
     def test_repeated_cpsat_solves_load_exactly_once(self):
-        """A second CP-SAT solve in the same process must not re-run
-        the real ortools import. Instrumented by patching
-        ``ortools.sat.python``'s attribute lookup via
-        ``sys.modules``-observation: after the first load
-        ``cp_model`` and ``cp_model_helper`` are set, and the
-        idempotent short-circuit in ``_load_ortools`` returns
-        immediately without touching the import machinery.
+        """Two CP-SAT solves in one process must trigger the real
+        OR-Tools import exactly once. Proved deterministically by
+        patching ``_do_ortools_import`` (the tiny helper that owns
+        the actual ``from ortools.sat.python import ...`` statement)
+        with a counter wrapper: after two solves, the counter must
+        read 1.
 
-        Patches the ``from ortools.sat.python import cp_model,
-        cp_model_helper`` statement's target to track invocation:
-        counts how many times ``_load_ortools`` actually reached
-        the ``from ortools.sat.python import`` line.
+        No wall-clock assertion. Module-identity is checked as a
+        supporting invariant but is not the primary proof.
         """
-        # We can't easily intercept `from X import Y` from outside
-        # so instead we verify by module identity: after two solves,
-        # the module objects must be the same instance and cp_model
-        # must be non-None throughout. Combined with the observation
-        # that the second call to _load_ortools takes < 1 ms while
-        # the first takes hundreds of ms, module identity is a
-        # sufficient proxy for "no reimport happened."
         program = (
             _SETUP
             + """
-import time
 from torch_spyre._inductor.scratchpad.ilp_solver_ortools import (
     CpSatLayoutSolver,
 )
 from torch_spyre._inductor.scratchpad import ilp_solver_ortools as m
 from torch_spyre._inductor.scratchpad.plan_solver import LifetimeBoundBuffer
+
+# Install a counter around _do_ortools_import BEFORE anything else
+# runs. The lazy loader has not been called yet on this process, so
+# cp_model / cp_model_helper are still None: the first solve will
+# unavoidably reach _do_ortools_import, and the second must NOT.
+call_count = {"n": 0}
+_real_import = m._do_ortools_import
+
+
+def counted_import():
+    call_count["n"] += 1
+    return _real_import()
+
+
+m._do_ortools_import = counted_import
+
 
 def force_fallback():
     bufs = [
@@ -374,40 +380,40 @@ def force_fallback():
     ]
     return CpSatLayoutSolver(bufs, 50, alignment=1).plan_layout()
 
-t0 = time.perf_counter()
 force_fallback()
-t_first = time.perf_counter() - t0
 first_cp = m.cp_model
 first_cph = m.cp_model_helper
+count_after_first = call_count["n"]
 
-t0 = time.perf_counter()
 force_fallback()
-t_second = time.perf_counter() - t0
 second_cp = m.cp_model
 second_cph = m.cp_model_helper
+count_after_second = call_count["n"]
 
 print(json.dumps({
+    "count_after_first": count_after_first,
+    "count_after_second": count_after_second,
     "same_cp_model": first_cp is second_cp,
     "same_cp_model_helper": first_cph is second_cph,
-    "first_wall_s": t_first,
-    "second_wall_s": t_second,
     "cp_model_present": snap()["cp_model"],
+    "cp_model_helper_present": snap()["cp_model_helper"],
 }))
 """
         )
         r = _run(program)
+        self.assertEqual(
+            r["count_after_first"],
+            1,
+            "first solve must trigger exactly one real import",
+        )
+        self.assertEqual(
+            r["count_after_second"], 1, "second solve must not trigger any real import"
+        )
+        # Supporting invariants.
         self.assertTrue(r["same_cp_model"], r)
         self.assertTrue(r["same_cp_model_helper"], r)
         self.assertTrue(r["cp_model_present"])
-        # Not a wall-clock assertion in the strict sense: the second
-        # solve reuses the loaded module and the fixture is tiny, so
-        # it completes in <100 ms. A regression that reimports would
-        # add ~1400 ms. Assert an order-of-magnitude ceiling only.
-        self.assertLess(
-            r["second_wall_s"],
-            1.0,
-            "second solve took >1s -- likely a reimport happened",
-        )
+        self.assertTrue(r["cp_model_helper_present"])
 
 
 class TestAvailabilityContractPreserved(unittest.TestCase):
@@ -529,56 +535,122 @@ class TestAvailabilityContractPreserved(unittest.TestCase):
 
 class TestConcurrentFirstLoad(unittest.TestCase):
     """The first-load critical section is protected by a
-    ``threading.Lock`` with a double-check. Two threads that race
-    into ``_load_ortools`` before the module is loaded must produce
-    the same ``cp_model`` and ``cp_model_helper`` object identities
-    and must not corrupt each other."""
+    ``threading.Lock``. Every thread that returns from
+    ``_load_ortools`` must observe both ``cp_model`` and
+    ``cp_model_helper`` bound; no successful caller may see a half-
+    published pair.
 
-    def test_two_threads_race_to_first_load(self):
-        """Fresh subprocess so the module globals start unset, then
-        two threads both call ``_load_ortools`` in a barrier-
-        synchronized way. Both must complete without exception and
-        must see identical module objects afterward."""
+    Guarding the actual invariant, not just "two threads finish".
+    Uses a slow inner import to enlarge the race window, then
+    stress-tests with many threads and asserts each one saw both
+    globals non-None immediately after its own ``_load_ortools``
+    returned. The number of real imports done under contention must
+    still be exactly one (the same guarantee
+    :meth:`test_repeated_cpsat_solves_load_exactly_once` checks in
+    the serial case).
+    """
+
+    def test_concurrent_first_load_publishes_atomically(self):
+        """Widened race window: patch ``_do_ortools_import`` to
+        sleep briefly before returning, then race N threads through
+        ``_load_ortools`` and assert:
+
+        * every worker saw ``cp_model is not None`` AND
+          ``cp_model_helper is not None`` right after its own
+          ``_load_ortools`` returned;
+        * every worker saw identical object identities for both
+          globals;
+        * ``_do_ortools_import`` was invoked exactly once total
+          (proves the lock actually serialised, not that all threads
+          happened to skip the import section).
+        """
         program = (
             _SETUP
             + """
 import threading
+import time
 
 from torch_spyre._inductor.scratchpad import ilp_solver_ortools as m
 
-barrier = threading.Barrier(2)
-results = [None, None]
-errors = [None, None]
+# Widen the race window by slowing the actual import. A concurrent
+# caller entering the lock after the slow import completes must see
+# both globals bound in one visit -- an outer fast-path check would
+# let it see the first assignment before the second.
+_real_import = m._do_ortools_import
+call_count = {"n": 0}
+count_lock = threading.Lock()
+
+
+def slow_import():
+    with count_lock:
+        call_count["n"] += 1
+    result = _real_import()
+    time.sleep(0.10)  # 100 ms of extra window
+    return result
+
+
+m._do_ortools_import = slow_import
+
+N = 8
+barrier = threading.Barrier(N)
+results = [None] * N
+errors = [None] * N
 
 
 def worker(idx):
     try:
         barrier.wait()  # synchronize the start
         m._load_ortools()
-        results[idx] = (id(m.cp_model), id(m.cp_model_helper))
+        # Read both globals immediately in the worker so its
+        # observation is captured atomically with respect to this
+        # worker's own return.
+        cp = m.cp_model
+        cph = m.cp_model_helper
+        results[idx] = {
+            "cp_is_none": cp is None,
+            "cph_is_none": cph is None,
+            "cp_id": id(cp) if cp is not None else None,
+            "cph_id": id(cph) if cph is not None else None,
+        }
     except Exception as exc:  # noqa: BLE001
         errors[idx] = f"{type(exc).__name__}: {exc}"
 
 
-threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+threads = [threading.Thread(target=worker, args=(i,)) for i in range(N)]
 for t in threads:
     t.start()
 for t in threads:
     t.join()
 
+cp_ids = sorted({r["cp_id"] for r in results if r})
+cph_ids = sorted({r["cph_id"] for r in results if r})
+any_saw_half = any(
+    r and (r["cp_is_none"] or r["cph_is_none"])
+    for r in results
+)
 print(json.dumps({
     "results": results,
     "errors": errors,
-    "identity_agree": results[0] == results[1],
-    "cp_model_present": snap()["cp_model"],
+    "call_count": call_count["n"],
+    "unique_cp_ids": cp_ids,
+    "unique_cph_ids": cph_ids,
+    "any_saw_half_published": any_saw_half,
+    "n_workers": N,
 }))
 """
         )
         r = _run(program)
-        self.assertIsNone(r["errors"][0], r)
-        self.assertIsNone(r["errors"][1], r)
-        self.assertTrue(r["identity_agree"], r)
-        self.assertTrue(r["cp_model_present"])
+        # No worker raised.
+        for err in r["errors"]:
+            self.assertIsNone(err, r)
+        # No worker observed a half-published pair.
+        self.assertFalse(r["any_saw_half_published"], r)
+        # All workers agreed on the identities of both globals.
+        self.assertEqual(len(r["unique_cp_ids"]), 1, r)
+        self.assertEqual(len(r["unique_cph_ids"]), 1, r)
+        # The lock actually serialised: exactly one real import ran
+        # under contention.
+        self.assertEqual(r["call_count"], 1, r)
 
 
 if __name__ == "__main__":

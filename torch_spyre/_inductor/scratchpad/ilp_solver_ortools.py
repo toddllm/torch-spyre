@@ -149,13 +149,13 @@ def _ortools_available() -> bool:
 
     Contract: returns True iff ``ortools.sat.python.cp_model`` is
     importable in principle, False if any part of the dotted path is
-    missing. ``find_spec`` raises :exc:`ModuleNotFoundError` /
-    :exc:`ImportError` when a parent package on a dotted-module lookup
-    is absent -- treated as "not available" here rather than allowed to
-    leak out. Any other exception (a genuinely misconfigured
-    ``sys.path``, say) is also treated as unavailable so the
-    ``_make_cpsat_solver`` factory in ``allocator.py`` can fall back to
-    greedy uniformly.
+    missing. ``find_spec`` raises :exc:`ModuleNotFoundError` (an
+    :exc:`ImportError` subclass) when a parent package on a dotted-
+    module lookup is absent, and :exc:`ValueError` when a parent
+    package's ``__spec__`` is None (observed on some frozen
+    distributions). Both are caught here and translated into False.
+    Every other exception is left to propagate; unknown states are
+    the caller's problem, not silently masked.
     """
     global _ORTOOLS_AVAILABLE
     if _ORTOOLS_AVAILABLE is None:
@@ -164,74 +164,116 @@ def _ortools_available() -> bool:
         try:
             spec = importlib.util.find_spec("ortools.sat.python.cp_model")
         except (ImportError, ValueError):
-            # ModuleNotFoundError is an ImportError. ValueError shows up
-            # when a parent package's ``__spec__`` is None (edge case,
-            # observed on some frozen distributions).
             spec = None
         _ORTOOLS_AVAILABLE = spec is not None
     return _ORTOOLS_AVAILABLE
 
 
+def _do_ortools_import() -> tuple[object, object]:
+    """Perform the real OR-Tools SWIG import and return
+    ``(cp_model, cp_model_helper)``.
+
+    Broken out from :func:`_load_ortools` for two reasons:
+
+    1. Deterministic testing: unit tests count "did we actually
+       import" by patching this helper rather than by comparing
+       wall-clock durations.
+    2. The ``ImportError`` translation logic stays isolated from the
+       lock and publication logic in :func:`_load_ortools`.
+
+    Raises :exc:`ImportError` with the standard message when the
+    actual import fails.
+    """
+    try:
+        from ortools.sat.python import (
+            cp_model as _cp,
+            cp_model_helper as _cph,
+        )
+    except (
+        ImportError
+    ) as exc:  # pragma: no cover - exercised only when ortools is broken
+        raise ImportError(
+            "The 'cpsat' layout solver requires the 'ortools' package, "
+            "which is not installed or is broken. Install it with "
+            "'pip install ortools' or select a different layout_solver "
+            "(e.g. 'greedy')."
+        ) from exc
+    return _cp, _cph
+
+
 def _load_ortools() -> None:
-    """Import OR-Tools and populate the module-global ``cp_model`` and
-    ``cp_model_helper`` names. Idempotent, thread-safe, safe to call in
-    every method that touches a CP-SAT model.
+    """Import OR-Tools and publish the module-global ``cp_model`` and
+    ``cp_model_helper`` names atomically. Idempotent, thread-safe,
+    safe to call in every method that touches a CP-SAT model.
+
+    Contract on successful return:
+
+    * ``cp_model is not None``
+    * ``cp_model_helper is not None``
+
+    No caller may observe one bound and the other still ``None``.
+    The whole check-and-publish happens under
+    ``_ORTOOLS_LOAD_LOCK``: a concurrent caller entering the
+    critical section after publication sees both globals bound in
+    the same visit and returns without re-importing.
+
+    We do NOT do an outer fast-path ``if cp_model is not None:
+    return`` before acquiring the lock. Skipping the lock would
+    allow this race: publisher thread P assigns ``cp_model = _cp``,
+    reader thread R sees the non-None ``cp_model`` in the outer
+    check and returns before P has published ``cp_model_helper``.
+    Uncontended lock acquisition is cheap in Python (a few hundred
+    nanoseconds) and only happens on CP-SAT-solve paths, which
+    already cost milliseconds to seconds. The certified fast path
+    never calls :func:`_load_ortools`, so it is not paying the lock
+    either way.
 
     Failure modes and observable semantics:
 
-    * **OR-Tools not installed at all** (typical s390x/ppc64le, or an
-      unusual x86_64 install missing the wheel):
+    * **OR-Tools not installed at all** (typical s390x/ppc64le, or
+      an unusual x86_64 install missing the wheel):
       :func:`_ortools_available` returns False, so
       :meth:`CpSatLayoutSolver.__init__` raises :exc:`ImportError`
-      before ``_make_cpsat_solver`` in ``allocator.py`` returns; that
-      :exc:`ImportError` is caught there and the allocator falls back
-      to greedy with a warning. ``_load_ortools`` is never called in
-      that case. This matches pre-#4141 observable behavior exactly.
+      before ``_make_cpsat_solver`` in ``allocator.py`` returns;
+      that :exc:`ImportError` is caught there and the allocator
+      falls back to greedy with a warning. ``_load_ortools`` is
+      never called in that case. This matches pre-#4141 observable
+      behavior exactly.
 
-    * **OR-Tools present-but-broken** (spec resolvable, but importing
-      ``cp_model`` fails for a native-dep or install-corruption reason):
-      :func:`_ortools_available` returns True, ``__init__`` succeeds,
-      the certified seed runs on ``plan_layout``. If the seed rejects,
+    * **OR-Tools present-but-broken** (spec resolvable, but
+      importing ``cp_model`` fails for a native-dep or install-
+      corruption reason): :func:`_ortools_available` returns True,
+      ``__init__`` succeeds, the certified seed runs on
+      ``plan_layout``. If the seed rejects,
       :meth:`_plan_layout_generic` calls ``_load_ortools`` and the
-      genuine :exc:`ImportError` propagates. That is a *narrowing* of
-      the pre-#4141 fallback contract: pre-#4141 the same failure would
-      have surfaced during ``_make_cpsat_solver``'s outer catch and
-      fallen back to greedy. Post-#4141, on a certified compile the
-      broken install is invisible; on a fallback compile the
-      :exc:`ImportError` surfaces at solve time. We treat this as
-      acceptable because (a) an OR-Tools install that ``find_spec``
-      resolves but that raises at import time is a corrupted
-      environment problem the user needs to see; and (b) the certified
-      case -- the vast majority of measured compiles -- silently gets
-      an objective-equivalent result instead of a silent greedy
-      fallback. See the PR body for the explicit narrowing statement.
+      genuine :exc:`ImportError` propagates. That is a *narrowing*
+      of the pre-#4141 fallback contract: pre-#4141 the same
+      failure would have surfaced during ``_make_cpsat_solver``'s
+      outer catch and fallen back to greedy. Post-#4141, on a
+      certified compile the broken install is invisible; on a
+      fallback compile the :exc:`ImportError` surfaces at solve
+      time. We treat this as acceptable because (a) an OR-Tools
+      install that ``find_spec`` resolves but that raises at import
+      time is a corrupted environment problem the user needs to
+      see; and (b) the certified case -- the vast majority of
+      measured compiles -- silently gets an objective-equivalent
+      result instead of a silent greedy fallback. See the PR body
+      for the explicit narrowing statement.
     """
     global cp_model, cp_model_helper
-    # First check outside the lock keeps the fast path lock-free after
-    # the module is loaded. Double-check inside the lock guards against
-    # two threads racing to be the first to load.
-    if cp_model is not None:
-        return
     with _ORTOOLS_LOAD_LOCK:
         if cp_model is not None:
+            # A previous call published both globals under this same
+            # lock. Assert the pair is intact so any future refactor
+            # that breaks atomicity fails loudly rather than in a
+            # subtle way at a downstream ``cp_model_helper`` access.
+            assert cp_model_helper is not None
             return
-        try:
-            from ortools.sat.python import (
-                cp_model as _cp,
-                cp_model_helper as _cph,
-            )
-        except (
-            ImportError
-        ) as exc:  # pragma: no cover - exercised only when ortools is broken
-            raise ImportError(
-                "The 'cpsat' layout solver requires the 'ortools' package, "
-                "which is not installed or is broken. Install it with "
-                "'pip install ortools' or select a different layout_solver "
-                "(e.g. 'greedy')."
-            ) from exc
-        # Publish both globals in one step: any successful call to
-        # ``_load_ortools`` leaves both names bound; a concurrent second
-        # caller that arrives after this block sees both, not one.
+        _cp, _cph = _do_ortools_import()
+        # Assign both under the lock in one visible step. Any
+        # concurrent caller that arrives after this block enters the
+        # lock, sees ``cp_model is not None``, verifies the
+        # invariant, and returns.
         cp_model = _cp
         cp_model_helper = _cph
 

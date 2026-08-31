@@ -98,11 +98,19 @@ import torch
 if TYPE_CHECKING:
     from ortools.sat.python import cp_model, cp_model_helper
 else:
-    try:
-        from ortools.sat.python import cp_model, cp_model_helper
-
-    except ImportError:  # pragma: no cover - exercised only when ortools is absent
-        cp_model = None
+    # OR-Tools loading is deferred. The certified-greedy fast path in
+    # :meth:`CpSatLayoutSolver.plan_layout` never needs a CP-SAT solve, so
+    # importing OR-Tools (a SWIG-wrapped C++ extension whose first import
+    # costs ~1.4 s in a fresh process) up front is pure startup tax on the
+    # certified-compile common case. These globals are populated by
+    # :func:`_load_ortools` the first time a CP-SAT-solve code path
+    # actually runs. Availability is probed cheaply and cached by
+    # :func:`_ortools_available`, preserving today's "cpsat with no
+    # ortools -> ImportError caught by _make_cpsat_solver -> greedy
+    # fallback" contract without paying the import cost on certified
+    # compiles.
+    cp_model = None
+    cp_model_helper = None
 
 from torch_spyre._inductor.scratchpad.greedy_solver import GreedyLayoutSolver
 from torch_spyre._inductor.scratchpad.plan_solver import (
@@ -119,6 +127,57 @@ from torch_spyre._inductor import config
 __all__ = ["CpSatLayoutSolver"]
 
 logger = logging.getLogger(__name__)
+
+_ORTOOLS_AVAILABLE: Optional[bool] = None
+
+
+def _ortools_available() -> bool:
+    """Cheap idempotent 'is ortools installable?' check.
+
+    Uses :func:`importlib.util.find_spec` once and caches the answer.
+    First call is ~10 ms; subsequent calls are effectively free
+    (dictionary lookup). Never triggers the full ~1.4 s OR-Tools SWIG
+    import; that only happens inside :func:`_load_ortools`, which the
+    CP-SAT-solve code paths call and the certified greedy seed does
+    not.
+    """
+    global _ORTOOLS_AVAILABLE
+    if _ORTOOLS_AVAILABLE is None:
+        import importlib.util
+
+        _ORTOOLS_AVAILABLE = (
+            importlib.util.find_spec("ortools.sat.python.cp_model") is not None
+        )
+    return _ORTOOLS_AVAILABLE
+
+
+def _load_ortools() -> None:
+    """Import OR-Tools and populate the module-global ``cp_model`` and
+    ``cp_model_helper`` names. Idempotent; safe to call in every
+    method that touches a CP-SAT model. Raises :exc:`ImportError` with
+    the same message as the previous eager import path when ortools is
+    not installed (matched by :func:`_make_cpsat_solver` in
+    ``allocator.py`` to fall back to greedy).
+    """
+    global cp_model, cp_model_helper
+    if cp_model is not None:
+        return
+    try:
+        from ortools.sat.python import (
+            cp_model as _cp,
+            cp_model_helper as _cph,
+        )
+    except (
+        ImportError
+    ) as exc:  # pragma: no cover - exercised only when ortools is absent
+        raise ImportError(
+            "The 'cpsat' layout solver requires the 'ortools' package, "
+            "which is not installed. Install it with 'pip install ortools' "
+            "or select a different layout_solver (e.g. 'greedy')."
+        ) from exc
+    cp_model = _cp
+    cp_model_helper = _cph
+
 
 # Drop cause for a buffer the solver chose to spill (rather than one pinned out
 # up front by _add_core_division): it fit but residency gave no benefit, or
@@ -665,7 +724,17 @@ class CpSatLayoutSolver(CoreDivisionLayoutSolver):
         time_limit_seconds: float = 600.0,
         bottom_justify: bool = True,
     ) -> None:
-        if cp_model is None:
+        # Availability check preserves the pre-existing contract that
+        # constructing ``CpSatLayoutSolver`` on an arch without ortools
+        # raises ``ImportError`` at construction, which
+        # :func:`~torch_spyre._inductor.scratchpad.allocator._make_cpsat_solver`
+        # catches to fall back to the greedy allocator. Uses
+        # :func:`importlib.util.find_spec` (~10 ms once, cached
+        # thereafter) rather than an eager import, so the ~1.4 s SWIG
+        # bootstrap is deferred to :func:`_load_ortools`, which the
+        # CP-SAT-solve paths call and the certified greedy seed does
+        # not.
+        if not _ortools_available():
             raise ImportError(
                 "The 'cpsat' layout solver requires the 'ortools' package, "
                 "which is not installed. Install it with 'pip install ortools' "
@@ -918,6 +987,14 @@ class CpSatLayoutSolver(CoreDivisionLayoutSolver):
         log_lx_usage: bool = False,
         cost_expr: sympy.Expr | None = None,
     ) -> list[LifetimeBoundBuffer | CoreDivisionBuffer]:
+        # Deferred until we actually need to build a CP-SAT model.
+        # :meth:`plan_layout` reaches this only when the certified greedy
+        # seed rejects; :meth:`plan_layout_and_core_divisions` always
+        # reaches it. In both cases the ~1.4 s SWIG import is fair to pay
+        # here (a full CP-SAT solve costs seconds or more), but paying it
+        # on every certified fast-path compile was pure startup tax.
+        _load_ortools()
+
         buffers = self.buffers
         if not buffers:
             return []

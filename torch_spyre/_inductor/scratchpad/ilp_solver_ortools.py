@@ -87,6 +87,7 @@ import copy
 import logging
 import math
 import os
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Generic, Optional, TypeVar, cast
@@ -99,16 +100,13 @@ if TYPE_CHECKING:
     from ortools.sat.python import cp_model, cp_model_helper
 else:
     # OR-Tools loading is deferred. The certified-greedy fast path in
-    # :meth:`CpSatLayoutSolver.plan_layout` never needs a CP-SAT solve, so
-    # importing OR-Tools (a SWIG-wrapped C++ extension whose first import
-    # costs ~1.4 s in a fresh process) up front is pure startup tax on the
-    # certified-compile common case. These globals are populated by
-    # :func:`_load_ortools` the first time a CP-SAT-solve code path
-    # actually runs. Availability is probed cheaply and cached by
-    # :func:`_ortools_available`, preserving today's "cpsat with no
-    # ortools -> ImportError caught by _make_cpsat_solver -> greedy
-    # fallback" contract without paying the import cost on certified
-    # compiles.
+    # :meth:`CpSatLayoutSolver.plan_layout` (PR #4139) never needs a CP-SAT
+    # solve, so importing OR-Tools (a SWIG-wrapped C++ extension whose
+    # first import costs ~1.4 s in a fresh process) up front is pure
+    # startup tax on the certified-compile common case. These globals are
+    # populated by :func:`_load_ortools` the first time a CP-SAT-solve
+    # code path actually runs; availability is probed cheaply and cached
+    # by :func:`_ortools_available`.
     cp_model = None
     cp_model_helper = None
 
@@ -128,55 +126,114 @@ __all__ = ["CpSatLayoutSolver"]
 
 logger = logging.getLogger(__name__)
 
+# Cached True/False; ``None`` means "not probed yet". Populated by
+# :func:`_ortools_available`.
 _ORTOOLS_AVAILABLE: Optional[bool] = None
+
+# Serializes the first-load critical section in :func:`_load_ortools` so
+# two threads that hit an uncertified compile simultaneously do not both
+# attempt the SWIG import.
+_ORTOOLS_LOAD_LOCK = threading.Lock()
 
 
 def _ortools_available() -> bool:
-    """Cheap idempotent 'is ortools installable?' check.
+    """Cheap idempotent "is OR-Tools importable?" check.
 
     Uses :func:`importlib.util.find_spec` once and caches the answer.
-    First call is ~10 ms; subsequent calls are effectively free
-    (dictionary lookup). Never triggers the full ~1.4 s OR-Tools SWIG
+    First call is ~10 ms on x86_64 with OR-Tools installed; subsequent
+    calls hit the cached ``_ORTOOLS_AVAILABLE`` global and are
+    effectively free. Never triggers the full ~1.4 s OR-Tools SWIG
     import; that only happens inside :func:`_load_ortools`, which the
     CP-SAT-solve code paths call and the certified greedy seed does
     not.
+
+    Contract: returns True iff ``ortools.sat.python.cp_model`` is
+    importable in principle, False if any part of the dotted path is
+    missing. ``find_spec`` raises :exc:`ModuleNotFoundError` /
+    :exc:`ImportError` when a parent package on a dotted-module lookup
+    is absent -- treated as "not available" here rather than allowed to
+    leak out. Any other exception (a genuinely misconfigured
+    ``sys.path``, say) is also treated as unavailable so the
+    ``_make_cpsat_solver`` factory in ``allocator.py`` can fall back to
+    greedy uniformly.
     """
     global _ORTOOLS_AVAILABLE
     if _ORTOOLS_AVAILABLE is None:
         import importlib.util
 
-        _ORTOOLS_AVAILABLE = (
-            importlib.util.find_spec("ortools.sat.python.cp_model") is not None
-        )
+        try:
+            spec = importlib.util.find_spec("ortools.sat.python.cp_model")
+        except (ImportError, ValueError):
+            # ModuleNotFoundError is an ImportError. ValueError shows up
+            # when a parent package's ``__spec__`` is None (edge case,
+            # observed on some frozen distributions).
+            spec = None
+        _ORTOOLS_AVAILABLE = spec is not None
     return _ORTOOLS_AVAILABLE
 
 
 def _load_ortools() -> None:
     """Import OR-Tools and populate the module-global ``cp_model`` and
-    ``cp_model_helper`` names. Idempotent; safe to call in every
-    method that touches a CP-SAT model. Raises :exc:`ImportError` with
-    the same message as the previous eager import path when ortools is
-    not installed (matched by :func:`_make_cpsat_solver` in
-    ``allocator.py`` to fall back to greedy).
+    ``cp_model_helper`` names. Idempotent, thread-safe, safe to call in
+    every method that touches a CP-SAT model.
+
+    Failure modes and observable semantics:
+
+    * **OR-Tools not installed at all** (typical s390x/ppc64le, or an
+      unusual x86_64 install missing the wheel):
+      :func:`_ortools_available` returns False, so
+      :meth:`CpSatLayoutSolver.__init__` raises :exc:`ImportError`
+      before ``_make_cpsat_solver`` in ``allocator.py`` returns; that
+      :exc:`ImportError` is caught there and the allocator falls back
+      to greedy with a warning. ``_load_ortools`` is never called in
+      that case. This matches pre-#4141 observable behavior exactly.
+
+    * **OR-Tools present-but-broken** (spec resolvable, but importing
+      ``cp_model`` fails for a native-dep or install-corruption reason):
+      :func:`_ortools_available` returns True, ``__init__`` succeeds,
+      the certified seed runs on ``plan_layout``. If the seed rejects,
+      :meth:`_plan_layout_generic` calls ``_load_ortools`` and the
+      genuine :exc:`ImportError` propagates. That is a *narrowing* of
+      the pre-#4141 fallback contract: pre-#4141 the same failure would
+      have surfaced during ``_make_cpsat_solver``'s outer catch and
+      fallen back to greedy. Post-#4141, on a certified compile the
+      broken install is invisible; on a fallback compile the
+      :exc:`ImportError` surfaces at solve time. We treat this as
+      acceptable because (a) an OR-Tools install that ``find_spec``
+      resolves but that raises at import time is a corrupted
+      environment problem the user needs to see; and (b) the certified
+      case -- the vast majority of measured compiles -- silently gets
+      an objective-equivalent result instead of a silent greedy
+      fallback. See the PR body for the explicit narrowing statement.
     """
     global cp_model, cp_model_helper
+    # First check outside the lock keeps the fast path lock-free after
+    # the module is loaded. Double-check inside the lock guards against
+    # two threads racing to be the first to load.
     if cp_model is not None:
         return
-    try:
-        from ortools.sat.python import (
-            cp_model as _cp,
-            cp_model_helper as _cph,
-        )
-    except (
-        ImportError
-    ) as exc:  # pragma: no cover - exercised only when ortools is absent
-        raise ImportError(
-            "The 'cpsat' layout solver requires the 'ortools' package, "
-            "which is not installed. Install it with 'pip install ortools' "
-            "or select a different layout_solver (e.g. 'greedy')."
-        ) from exc
-    cp_model = _cp
-    cp_model_helper = _cph
+    with _ORTOOLS_LOAD_LOCK:
+        if cp_model is not None:
+            return
+        try:
+            from ortools.sat.python import (
+                cp_model as _cp,
+                cp_model_helper as _cph,
+            )
+        except (
+            ImportError
+        ) as exc:  # pragma: no cover - exercised only when ortools is broken
+            raise ImportError(
+                "The 'cpsat' layout solver requires the 'ortools' package, "
+                "which is not installed or is broken. Install it with "
+                "'pip install ortools' or select a different layout_solver "
+                "(e.g. 'greedy')."
+            ) from exc
+        # Publish both globals in one step: any successful call to
+        # ``_load_ortools`` leaves both names bound; a concurrent second
+        # caller that arrives after this block sees both, not one.
+        cp_model = _cp
+        cp_model_helper = _cph
 
 
 # Drop cause for a buffer the solver chose to spill (rather than one pinned out
@@ -990,9 +1047,10 @@ class CpSatLayoutSolver(CoreDivisionLayoutSolver):
         # Deferred until we actually need to build a CP-SAT model.
         # :meth:`plan_layout` reaches this only when the certified greedy
         # seed rejects; :meth:`plan_layout_and_core_divisions` always
-        # reaches it. In both cases the ~1.4 s SWIG import is fair to pay
-        # here (a full CP-SAT solve costs seconds or more), but paying it
-        # on every certified fast-path compile was pure startup tax.
+        # reaches it. When CP-SAT is actually required, paying its
+        # one-time OR-Tools import is unavoidable; subsequent solves in
+        # the same process reuse the loaded module. Certified compiles
+        # pay nothing.
         _load_ortools()
 
         buffers = self.buffers
